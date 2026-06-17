@@ -19,18 +19,63 @@ import (
 // backend (OpenAI SDK, Codex token, ...).
 type agentFactory func(addr sketch.Address, system string, next sketch.Address, inbox sketch.Mailbox) sketch.Agent
 
-// collectOne waits (via Select) for one message on mb, or fails on timeout.
-func collectOne(t *testing.T, ctx context.Context, mb sketch.Mailbox) string {
+// collectOne waits for one message on mb, a run-loop error, or timeout.
+func collectOne(t *testing.T, ctx context.Context, mb sketch.Mailbox, errs <-chan error) string {
 	t.Helper()
-	var got string
-	_, err := runtime.NewSelector().Run(ctx, sketch.Select{Cases: []sketch.Case{
-		{Mailbox: mb, OnRecv: func(m sketch.Msg) error { got = m.Payload; return nil }},
-		{After: 2 * time.Minute, OnAfter: func() error { return fmt.Errorf("timed out waiting for a message") }},
-	}})
-	if err != nil {
-		t.Fatal(err)
+	type recvResult struct {
+		payload string
+		err     error
 	}
-	return got
+	recv := make(chan recvResult, 1)
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	go func() {
+		m, ok, err := mb.Recv(waitCtx)
+		switch {
+		case err != nil:
+			recv <- recvResult{err: err}
+		case !ok:
+			recv <- recvResult{err: fmt.Errorf("mailbox closed while waiting for a message")}
+		default:
+			recv <- recvResult{payload: m.Payload}
+		}
+	}()
+
+	select {
+	case got := <-recv:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		return got.payload
+	case err := <-errs:
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ""
+	case <-waitCtx.Done():
+		t.Fatal("timed out waiting for a message")
+		return ""
+	}
+}
+
+func runTracedAsync(wg *sync.WaitGroup, errs chan<- error, ctx context.Context, a sketch.Agent, r runtime.Dispatcher, idle time.Duration, tr runtime.Tracer) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := runtime.RunTraced(ctx, a, r, idle, tr); err != nil {
+			errs <- fmt.Errorf("agent %s: %w", a.Address(), err)
+		}
+	}()
+}
+
+func assertNoRunErrors(t *testing.T, errs chan error) {
+	t.Helper()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
 }
 
 // traceLogger returns a Tracer that logs every message an agent saw/sent via
@@ -83,22 +128,18 @@ func assertPipeline(t *testing.T, f agentFactory) {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	errs := make(chan error, 2)
 	for _, a := range []sketch.Agent{planner, writer} {
-		wg.Add(1)
-		go func(a sketch.Agent) {
-			defer wg.Done()
-			if err := runtime.RunTraced(ctx, a, r, 20*time.Second, tr); err != nil {
-				t.Errorf("agent %s: %v", a.Address(), err)
-			}
-		}(a)
+		runTracedAsync(&wg, errs, ctx, a, r, 20*time.Second, tr)
 	}
 
 	if err := plannerIn.Send(ctx, sketch.Msg{From: "user", To: "planner", Payload: "Explain why message passing beats shared memory for agents."}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	final := collectOne(t, ctx, out)
+	final := collectOne(t, ctx, out, errs)
 	cancel()
 	wg.Wait()
+	assertNoRunErrors(t, errs)
 
 	if !strings.Contains(final, code) {
 		t.Fatalf("pipeline: reference code %q did not survive task->planner->writer->out; final=%q", code, final)
@@ -124,14 +165,11 @@ func assertPool(t *testing.T, f agentFactory) {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	errs := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		w := f(sketch.Address(fmt.Sprintf("w%d", i)),
 			"Uppercase the token the user gives you and reply with ONLY the uppercased token, nothing else.", "results", queue)
-		wg.Add(1)
-		go func(a sketch.Agent) {
-			defer wg.Done()
-			_ = runtime.RunTraced(ctx, a, r, 20*time.Second, tr)
-		}(w)
+		runTracedAsync(&wg, errs, ctx, w, r, 20*time.Second, tr)
 	}
 
 	for _, tok := range tokens {
@@ -142,7 +180,7 @@ func assertPool(t *testing.T, f agentFactory) {
 
 	seen := map[string]int{}
 	for range tokens {
-		up := strings.ToUpper(collectOne(t, ctx, results))
+		up := strings.ToUpper(collectOne(t, ctx, results, errs))
 		for _, tok := range tokens {
 			if strings.Contains(up, strings.ToUpper(tok)) {
 				seen[tok]++
@@ -151,6 +189,7 @@ func assertPool(t *testing.T, f agentFactory) {
 	}
 	cancel()
 	wg.Wait()
+	assertNoRunErrors(t, errs)
 
 	for _, tok := range tokens {
 		if seen[tok] != 1 {
@@ -178,16 +217,13 @@ func assertBroadcast(t *testing.T, f agentFactory) {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	errs := make(chan error, nSubs)
 	for i := 0; i < nSubs; i++ {
 		inbox := runtime.NewMailbox(1)
 		s := f(sketch.Address(fmt.Sprintf("sub%d", i)),
 			"Reply with ONLY the exact code the user sends, nothing else.", "acks", inbox)
 		broker.Subscribe(inbox)
-		wg.Add(1)
-		go func(a sketch.Agent) {
-			defer wg.Done()
-			_ = runtime.RunTraced(ctx, a, r, 20*time.Second, tr)
-		}(s)
+		runTracedAsync(&wg, errs, ctx, s, r, 20*time.Second, tr)
 	}
 
 	if err := broker.Publish(ctx, sketch.Msg{From: "publisher", Payload: "Code: " + code}); err != nil {
@@ -196,12 +232,13 @@ func assertBroadcast(t *testing.T, f agentFactory) {
 
 	withCode := 0
 	for i := 0; i < nSubs; i++ {
-		if strings.Contains(strings.ToUpper(collectOne(t, ctx, acks)), code) {
+		if strings.Contains(strings.ToUpper(collectOne(t, ctx, acks, errs)), code) {
 			withCode++
 		}
 	}
 	cancel()
 	wg.Wait()
+	assertNoRunErrors(t, errs)
 
 	if withCode != nSubs {
 		t.Fatalf("broadcast: %d/%d subscribers echoed the broadcast code %q", withCode, nSubs, code)
@@ -229,6 +266,7 @@ func assertBroadcastJoin(t *testing.T, f agentFactory) {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	errs := make(chan error, nWorkers+1)
 	markers := make([]string, nWorkers)
 	for i := 0; i < nWorkers; i++ {
 		marker := fmt.Sprintf("W%d", i)
@@ -237,8 +275,7 @@ func assertBroadcastJoin(t *testing.T, f agentFactory) {
 		w := f(sketch.Address(fmt.Sprintf("worker-%d", i)),
 			"Reply with ONLY the exact token "+marker+", nothing else.", "join", inbox)
 		broker.Subscribe(inbox)
-		wg.Add(1)
-		go func(a sketch.Agent) { defer wg.Done(); _ = runtime.RunTraced(ctx, a, r, 20*time.Second, tr) }(w)
+		runTracedAsync(&wg, errs, ctx, w, r, 20*time.Second, tr)
 	}
 
 	// The join depends on all workers; it blocks until it has collected nWorkers.
@@ -249,16 +286,16 @@ func assertBroadcastJoin(t *testing.T, f agentFactory) {
 		}
 		return sketch.Msg{Payload: strings.Join(parts, "|")}
 	})
-	wg.Add(1)
-	go func() { defer wg.Done(); _ = runtime.RunTraced(ctx, join, r, 30*time.Second, tr) }()
+	runTracedAsync(&wg, errs, ctx, join, r, 30*time.Second, tr)
 
 	if err := broker.Publish(ctx, sketch.Msg{From: "trigger", Payload: "Report your token now."}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
-	joined := strings.ToUpper(collectOne(t, ctx, out))
+	joined := strings.ToUpper(collectOne(t, ctx, out, errs))
 	cancel()
 	wg.Wait()
+	assertNoRunErrors(t, errs)
 
 	for _, m := range markers {
 		if !strings.Contains(joined, m) {

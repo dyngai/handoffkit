@@ -119,19 +119,34 @@ func TestBuildPromptSkipsDuplicateSummaryPayload(t *testing.T) {
 
 func TestBuildPromptSkipsStaleFullPayloadForCompactedHandoff(t *testing.T) {
 	full := strings.Repeat("FULL ", 200)
+	summary := "FULL FULL FULL ...[truncated; full text in corpus]"
 	prompt := buildPrompt(sketch.Msg{
 		From:    "planner",
 		Payload: full,
 		Ctx: sketch.HandoffContext{
-			Summary: "bounded summary",
+			Summary: summary,
 			Refs:    []sketch.MemoryRef{{Namespace: "handoff", Key: "planner-1"}},
 		},
 	})
 	if strings.Contains(prompt, full) {
 		t.Fatal("prompt included stale full Payload despite compacted handoff context")
 	}
-	if !strings.Contains(prompt, "bounded summary") {
+	if !strings.Contains(prompt, summary) {
 		t.Fatal("prompt dropped the bounded summary")
+	}
+}
+
+func TestBuildPromptIncludesDistinctPayloadWithCompactedContext(t *testing.T) {
+	prompt := buildPrompt(sketch.Msg{
+		From:    "planner",
+		Payload: "write a fresh final answer from this context",
+		Ctx: sketch.HandoffContext{
+			Summary: "outline summary ...[truncated; full text in corpus]",
+			Refs:    []sketch.MemoryRef{{Namespace: "handoff", Key: "planner-1"}},
+		},
+	})
+	if !strings.Contains(prompt, "Task:\nwrite a fresh final answer from this context") {
+		t.Fatalf("prompt dropped distinct payload despite compacted context:\n%s", prompt)
 	}
 }
 

@@ -37,13 +37,33 @@ func buildPrompt(in sketch.Msg) string {
 		}
 		b.WriteString("\n")
 	}
-	hasBoundedContext := in.Ctx.Summary != "" || len(in.Ctx.Thread) > 0
-	hasCorpusRefs := len(in.Ctx.Refs) > 0
-	if in.Payload != "" && in.Payload != in.Ctx.Summary && !(hasCorpusRefs && hasBoundedContext) {
+	if in.Payload != "" && !payloadDuplicatesBoundedContext(in.Payload, in.Ctx) {
 		b.WriteString("Task:\n")
 		b.WriteString(in.Payload)
 	}
 	return b.String()
+}
+
+func payloadDuplicatesBoundedContext(payload string, hc sketch.HandoffContext) bool {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return true
+	}
+	if payload == strings.TrimSpace(hc.Summary) {
+		return true
+	}
+	for _, turn := range hc.Thread {
+		if payload == strings.TrimSpace(turn.Content) {
+			return true
+		}
+	}
+	if len(hc.Refs) == 0 {
+		return false
+	}
+	const truncMarker = " ...[truncated; full text in corpus]"
+	summary := strings.TrimSpace(hc.Summary)
+	prefix, truncated := strings.CutSuffix(summary, truncMarker)
+	return truncated && prefix != "" && strings.HasPrefix(payload, strings.TrimSpace(prefix))
 }
 
 // buildHandoff projects an agent's output onto the HandoffContext it ships.

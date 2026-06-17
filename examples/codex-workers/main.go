@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dyngai/handoffkit/runtime"
@@ -78,8 +80,7 @@ func (w *codexWorker) Step(ctx context.Context, in sketch.Msg) ([]sketch.Msg, er
 	// Isolated worktree per task so parallel edits never clash. `git worktree
 	// add` locks the base repo, so serialize just that step.
 	w.wtMu.Lock()
-	add := exec.CommandContext(ctx, "git", "-C", w.baseRepo, "worktree", "add", "-B", "task-"+task.ID, wt, "HEAD")
-	addOut, addErr := add.CombinedOutput()
+	addOut, addErr := combinedOutputTree(ctx, "", "git", "-C", w.baseRepo, "worktree", "add", "-B", "task-"+task.ID, wt, "HEAD")
 	w.wtMu.Unlock()
 	if addErr != nil {
 		res.Note = "worktree add failed: " + lastLine(string(addOut))
@@ -87,17 +88,14 @@ func (w *codexWorker) Step(ctx context.Context, in sketch.Msg) ([]sketch.Msg, er
 	}
 
 	// Run the real Codex coding agent, unattended, scoped to the worktree.
-	cx := exec.CommandContext(ctx, "codex", "exec", "-C", wt, "-s", sandboxMode, task.Prompt)
-	if _, err := cx.CombinedOutput(); err != nil {
+	if _, err := combinedOutputTree(ctx, "", "codex", "exec", "-C", wt, "-s", sandboxMode, task.Prompt); err != nil {
 		res.Note = "codex exec: " + firstLine(err.Error())
 	} else {
 		res.CodexOK = true
 	}
 
 	// Objective gate, the compiler/tests, not the model's self-report.
-	tt := exec.CommandContext(ctx, "go", "test", "./...")
-	tt.Dir = wt
-	ttOut, ttErr := tt.CombinedOutput()
+	ttOut, ttErr := combinedOutputTree(ctx, wt, "go", "test", "./...")
 	res.TestPassed = ttErr == nil
 	if !res.TestPassed && res.Note == "" {
 		res.Note = "go test failed: " + lastLine(string(ttOut))
@@ -211,19 +209,27 @@ func main() {
 		}
 	}
 	fmt.Printf("inspect/clean worktrees: git -C %s worktree list\n", baseRepo)
+	fmt.Printf("remove scratch repo: rm -rf %s\n", filepath.Dir(baseRepo))
 }
 
 // setupScratchRepo creates a throwaway git repo (with go.mod + an initial
 // commit so worktrees have a HEAD) and a clean directory to hold worktrees.
 func setupScratchRepo() (baseRepo, wtRoot string, err error) {
-	base := filepath.Join(os.TempDir(), "codex-workers-base")
-	wt := filepath.Join(os.TempDir(), "codex-workers-wt")
-	for _, d := range []string{base, wt} {
-		if err = os.RemoveAll(d); err != nil {
-			return "", "", err
-		}
+	root, err := os.MkdirTemp("", "codex-workers-*")
+	if err != nil {
+		return "", "", err
 	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(root)
+		}
+	}()
+	base := filepath.Join(root, "base")
+	wt := filepath.Join(root, "worktrees")
 	if err = os.MkdirAll(base, 0o755); err != nil {
+		return "", "", err
+	}
+	if err = os.MkdirAll(wt, 0o755); err != nil {
 		return "", "", err
 	}
 	steps := [][]string{
@@ -244,6 +250,39 @@ func setupScratchRepo() (baseRepo, wtRoot string, err error) {
 		}
 	}
 	return base, wt, nil
+}
+
+func combinedOutputTree(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return out.Bytes(), err
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return out.Bytes(), err
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Process.Kill()
+		}
+		err := <-done
+		if err == nil {
+			err = ctx.Err()
+		}
+		return out.Bytes(), err
+	}
 }
 
 func firstLine(s string) string {
