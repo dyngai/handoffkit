@@ -2,6 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/dyngai/handoffkit.svg)](https://pkg.go.dev/github.com/dyngai/handoffkit)
 [![Codex Plugin](https://img.shields.io/badge/Codex-Plugin-111111?logo=openai&logoColor=white)](https://developers.openai.com/codex/plugins)
+[![Install in Codex](https://img.shields.io/badge/Install%20in-Codex-111111?logo=openai&logoColor=white)](#install-as-a-codex-plugin)
 
 ![HandoffKit overview: LLM agents coordinating through explicit messages, mailboxes, routing, select-style waits, pub/sub, handoffs, and traces](./assets/handoffkit-overview.png)
 
