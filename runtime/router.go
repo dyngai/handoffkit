@@ -145,15 +145,17 @@ func RunTraced(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Dura
 			return err
 		}
 		for _, o := range outs {
+			routed := o
+			routed.From = a.Address()
 			if trace != nil {
 				// TraceSend records what the agent emitted; delivery (Route below)
 				// is a separate step that may still fail.
-				trace(TraceEvent{Agent: a.Address(), Dir: TraceSend, Msg: o})
+				trace(TraceEvent{Agent: a.Address(), Dir: TraceSend, Msg: routed})
 			}
-			if o.To == "" {
+			if routed.To == "" {
 				continue // terminal output; nothing to route
 			}
-			if err := r.Route(ctx, o); err != nil {
+			if err := r.Route(ctx, routed); err != nil {
 				return err
 			}
 		}

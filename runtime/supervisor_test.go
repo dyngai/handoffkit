@@ -84,6 +84,10 @@ func TestNursery_RouteEnforcesParentChildTopology(t *testing.T) {
 	if err := n.Route(ctx, sketch.Msg{From: "a", To: "b", Payload: "lateral"}); err == nil {
 		t.Fatal("a -> b (sibling lateral) should be a topology violation")
 	}
+	// External seeding is root-only, not a way to bypass child topology.
+	if err := n.Route(ctx, sketch.Msg{To: "a", Payload: "direct seed"}); err == nil {
+		t.Fatal("external seed to a child should be rejected")
+	}
 	// Unregistered sender impersonating an agent: denied.
 	if err := n.Route(ctx, sketch.Msg{From: "nobody", To: "coord", Payload: "x"}); err == nil {
 		t.Fatal("message from an unregistered sender should error")
@@ -102,6 +106,74 @@ func TestNursery_RouteEnforcesParentChildTopology(t *testing.T) {
 	}
 	if m, ok := tryRecv(a.inbox); !ok || m.Payload != "task" {
 		t.Fatalf("a message = (%q, %v), want (task, true)", m.Payload, ok)
+	}
+}
+
+func TestRunStampsActualAgentAddressBeforeRouting(t *testing.T) {
+	n := NewNursery(context.Background(), 1)
+	coord := spawnAck(t, n, "", "coord", "")
+	attacker := &spoofAgent{
+		addr:  "a",
+		inbox: NewMailbox(1),
+		out: []sketch.Msg{{
+			From:    "coord",
+			To:      "b",
+			Payload: "spoofed sibling send",
+		}},
+	}
+	victim := spawnAck(t, n, "coord", "b", "coord")
+	if _, err := n.Spawn(context.Background(), "coord", attacker); err != nil {
+		t.Fatalf("spawn attacker: %v", err)
+	}
+
+	actx, ok := n.Context("a")
+	if !ok {
+		t.Fatal("attacker has no supervised context")
+	}
+	if err := n.Route(context.Background(), sketch.Msg{From: "coord", To: "a", Payload: "go"}); err != nil {
+		t.Fatalf("seed attacker: %v", err)
+	}
+	err := Run(actx, attacker, n, time.Second)
+	if err == nil {
+		t.Fatal("Run should reject spoofed sibling output after stamping actual sender")
+	}
+	if _, ok := tryRecv(victim.inbox); ok {
+		t.Fatal("victim received a spoofed sibling message")
+	}
+	if _, ok := tryRecv(coord.inbox); ok {
+		t.Fatal("coord unexpectedly received a message")
+	}
+}
+
+func TestRunStampsBlankFromBeforeRouting(t *testing.T) {
+	n := NewNursery(context.Background(), 1)
+	spawnAck(t, n, "", "coord", "")
+	attacker := &spoofAgent{
+		addr:  "a",
+		inbox: NewMailbox(1),
+		out: []sketch.Msg{{
+			To:      "b",
+			Payload: "blank-from sibling send",
+		}},
+	}
+	victim := spawnAck(t, n, "coord", "b", "coord")
+	if _, err := n.Spawn(context.Background(), "coord", attacker); err != nil {
+		t.Fatalf("spawn attacker: %v", err)
+	}
+
+	actx, ok := n.Context("a")
+	if !ok {
+		t.Fatal("attacker has no supervised context")
+	}
+	if err := n.Route(context.Background(), sketch.Msg{From: "coord", To: "a", Payload: "go"}); err != nil {
+		t.Fatalf("seed attacker: %v", err)
+	}
+	err := Run(actx, attacker, n, time.Second)
+	if err == nil {
+		t.Fatal("Run should not allow blank From to become external seeding")
+	}
+	if _, ok := tryRecv(victim.inbox); ok {
+		t.Fatal("victim received a blank-from sibling message")
 	}
 }
 
@@ -165,6 +237,34 @@ func TestNursery_CancelUnwindsSubtree(t *testing.T) {
 	if err := n.Cancel(context.Background(), "coord"); err == nil {
 		t.Fatal("re-cancelling an already-removed address should error")
 	}
+}
+
+func TestNursery_ContextReturnsFalseForCancelledContext(t *testing.T) {
+	root, cancel := context.WithCancel(context.Background())
+	n := NewNursery(root, 1)
+	spawnAck(t, n, "", "coord", "")
+
+	if _, ok := n.Context("coord"); !ok {
+		t.Fatal("coord context should exist before cancellation")
+	}
+	cancel()
+	if _, ok := n.Context("coord"); ok {
+		t.Fatal("Context should report ok=false after the supervised context is cancelled")
+	}
+}
+
+type spoofAgent struct {
+	addr  sketch.Address
+	inbox sketch.Mailbox
+	out   []sketch.Msg
+}
+
+func (a *spoofAgent) Address() sketch.Address { return a.addr }
+func (a *spoofAgent) Inbox() sketch.Mailbox   { return a.inbox }
+func (a *spoofAgent) Step(context.Context, sketch.Msg) ([]sketch.Msg, error) {
+	out := a.out
+	a.out = nil
+	return out, nil
 }
 
 // A Route already blocked in the destination mailbox must still return when the

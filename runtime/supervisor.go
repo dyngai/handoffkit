@@ -28,7 +28,8 @@ type node struct {
 //   - Route enforces who-may-message-whom: only parent<->child edges are
 //     deliverable, so a worker cannot message a sibling (lateral delegation) or
 //     an arbitrary node across the tree. External seeding (From == "") is allowed
-//     so a driver can inject work into the root.
+//     only into roots, so a driver can inject work without bypassing child
+//     topology.
 //   - Cancel unwinds an agent and its whole spawned subtree by cancelling each
 //     descendant's context (the supervised run loops exit) and dropping them from
 //     the tree and the delivery table.
@@ -117,9 +118,9 @@ func (n *Nursery) Spawn(_ context.Context, parent sketch.Address, a sketch.Agent
 
 // Route enforces the topology, then delegates delivery to the inner Router. A
 // message is deliverable only if its From/To form a parent<->child edge, or it
-// is external seeding (From == ""). It errors on an unknown destination, an
-// unknown non-empty sender, or a topology violation (e.g. a sibling-to-sibling
-// lateral message).
+// is external seeding (From == "") into a root. It errors on an unknown
+// destination, an unknown non-empty sender, or a topology violation (e.g. a
+// sibling-to-sibling lateral message).
 func (n *Nursery) Route(ctx context.Context, m sketch.Msg) error {
 	if n == nil {
 		return fmt.Errorf("handoffkit: route on a nil Nursery")
@@ -138,7 +139,12 @@ func (n *Nursery) Route(ctx context.Context, m sketch.Msg) error {
 	}
 	switch {
 	case m.From == "":
-		// External seeding: a driver injecting work into a (root) agent.
+		// External seeding: a driver injecting work into a root agent.
+		if to.parent != "" {
+			return fmt.Errorf(
+				"handoffkit: external seed may target only root agents, not child %q",
+				m.To)
+		}
 	case !fromOK:
 		return fmt.Errorf("handoffkit: message from unregistered sender %q", m.From)
 	case to.parent == m.From || from.parent == m.To:
@@ -172,7 +178,7 @@ func (n *Nursery) Context(addr sketch.Address) (context.Context, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	nd, ok := n.nodes[addr]
-	if !ok {
+	if !ok || nd.ctx.Err() != nil {
 		return nil, false
 	}
 	return nd.ctx, true
