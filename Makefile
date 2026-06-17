@@ -37,18 +37,18 @@ fmt: ## gofmt all packages
 tidy: ## sync go.mod / go.sum
 	$(GO) mod tidy
 
-sync-plugin: ## re-vendor sketch + runtime into the Codex plugin scaffold (prevents drift)
+sync-plugin: ## re-vendor sketch + runtime, including tests, into the Codex plugin scaffold
 	@rm -rf $(PLUGIN_REF)/sketch $(PLUGIN_REF)/runtime
 	@mkdir -p $(PLUGIN_REF)/sketch $(PLUGIN_REF)/runtime
-	cp $(filter-out %_test.go,$(wildcard sketch/*.go)) $(PLUGIN_REF)/sketch/
-	cp $(filter-out %_test.go,$(wildcard runtime/*.go)) $(PLUGIN_REF)/runtime/
-	@echo "synced sketch + runtime -> $(PLUGIN_REF)"
+	cp $(wildcard sketch/*.go) $(PLUGIN_REF)/sketch/
+	cp $(wildcard runtime/*.go) $(PLUGIN_REF)/runtime/
+	@echo "synced sketch + runtime, including tests -> $(PLUGIN_REF)"
 
 check-plugin-sync: ## fail if the plugin's vendored runtime has drifted (CI)
 	@tmp=$$(mktemp -d); \
 	mkdir -p $$tmp/sketch $$tmp/runtime; \
-	cp $(filter-out %_test.go,$(wildcard sketch/*.go)) $$tmp/sketch/; \
-	cp $(filter-out %_test.go,$(wildcard runtime/*.go)) $$tmp/runtime/; \
+	cp $(wildcard sketch/*.go) $$tmp/sketch/; \
+	cp $(wildcard runtime/*.go) $$tmp/runtime/; \
 	if diff -r $$tmp $(PLUGIN_REF) >/dev/null 2>&1; then \
 		echo "plugin scaffold in sync"; rm -rf $$tmp; \
 	else \

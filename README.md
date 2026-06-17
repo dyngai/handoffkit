@@ -88,8 +88,8 @@ codex
 codex plugin marketplace add /path/to/handoffkit
 ```
 
-Then open `/plugins`, choose `dyngai/handoffkit` or **HandoffKit (local)**,
-open **HandoffKit**, and select **Install plugin**.
+Then open `/plugins`, choose `dyngai/handoffkit` or the local marketplace entry
+you registered, open **HandoffKit**, and select **Install plugin**.
 
 Use it with the `@` picker:
 
@@ -101,7 +101,8 @@ Use it with the `@` picker:
 After editing plugin skills or manifests, restart Codex and refresh or reinstall
 the plugin from `/plugins`.
 
-Maintainers: the scaffold skill vendors a copy of `runtime/` and `sketch/`.
+Maintainers: the scaffold skill vendors a copy of `runtime/` and `sketch/`,
+including the runtime tests used by downstream projects to verify the scaffold.
 After runtime changes, run:
 
 ```sh

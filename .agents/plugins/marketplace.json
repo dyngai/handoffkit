@@ -1,7 +1,7 @@
 {
-  "name": "handoffkit-local",
+  "name": "handoffkit",
   "interface": {
-    "displayName": "HandoffKit (local)"
+    "displayName": "HandoffKit"
   },
   "plugins": [
     {

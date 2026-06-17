@@ -22,23 +22,45 @@ equivalent from its primitive→language mapping table.
    The scaffolded runtime requires Go 1.21+. The full HandoffKit repo requires
    Go 1.22+ because of its OpenAI SDK dependency.
 
-2. **Copy the reference sources** from this skill into the project, preserving
-   structure and license attribution:
-   - `references/_src/sketch/handoffkit.go` → `sketch/handoffkit.go`
-   - `references/_src/runtime/*.go` → `runtime/`
+2. **Choose package destinations and protect existing code.** Before copying,
+   inspect the target paths you plan to use.
+   - Default destinations are `sketch/` and `runtime/`.
+   - If either path already exists and contains files, stop and summarize what
+     is there. Do not overwrite, delete, merge into, or `rm -rf` those
+     directories implicitly.
+   - Ask the user whether to overwrite/merge into those paths, or choose an
+     alternate namespace such as `internal/handoffkit/sketch` and
+     `internal/handoffkit/runtime`.
+   - If you choose alternate paths, keep the same relative shape (`sketch`
+     beside `runtime`) and rewrite imports to that alternate sketch package.
+
+3. **Copy the reference sources** from this skill into the chosen destinations,
+   preserving structure, tests, and license attribution:
+   - `references/_src/sketch/*.go` → `<sketch destination>/`
+   - `references/_src/runtime/*.go` → `<runtime destination>/`
+   - Include `_test.go` files. They are part of the scaffolded confidence
+     boundary and let the target project verify the copied runtime directly.
    - The copied files are MIT-licensed HandoffKit source; preserve the original
      license notice by keeping the repo's `LICENSE` text with the copied
      scaffold or adding an equivalent attribution/license notice where the
      target project tracks third-party code.
 
-3. **Rewrite the import path.** In every copied file, replace the placeholder
-   module path `github.com/dyngai/handoffkit` with the target module
-   path. (The interfaces live at `<module>/sketch`; the runtime imports them.)
+4. **Rewrite the import path.** In every copied file, including tests, replace
+   the placeholder sketch import `github.com/dyngai/handoffkit/sketch` with the
+   chosen target sketch import. For default destinations this is
+   `<module>/sketch`; for alternate destinations it may be, for example,
+   `<module>/internal/handoffkit/sketch`.
 
-4. **Verify.** Run `go build ./... && go vet ./...` and fix anything that
-   fails.
+5. **Verify.** Run the scaffold's direct tests first, then the wider project
+   checks:
+   - `go test ./<runtime destination> ./<sketch destination>`
+   - `go test -race ./<runtime destination> ./<sketch destination>`
+   - `go build ./...`
+   - `go vet ./...`
+   Fix anything that fails. If the target project has its own test command, run
+   that as well.
 
-5. **Point the user at the API** so they can wire their first topology:
+6. **Point the user at the API** so they can wire their first topology:
    - `runtime.NewMailbox(buffer)`, unbuffered = rendezvous; buffered = queue.
    - `runtime.NewSelector()`, wait on inbox / timeout / cancellation.
    - `runtime.NewRouter()` + `runtime.Run` / `runtime.RunTraced`, single-owner agent loop with point-to-point routing (and optional message tracing).

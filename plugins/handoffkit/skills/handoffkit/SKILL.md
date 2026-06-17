@@ -29,6 +29,12 @@ The rest of this skill is substrate-independent.
 - **Router**, point-to-point delivery (address → one mailbox). Handoff and dispatch.
 - **Broker**, point-to-many broadcast (one event → every subscriber). Pub/sub awareness. (This is the blackboard creeping back in, use only where ambient awareness is genuinely needed.)
 - **Join barrier**, an agent that buffers inbound messages and only emits after N have arrived (wait for all dependencies), then resets.
+- **Quorum barrier**, a fan-in agent that emits after the first N of total expected messages arrive.
+- **Budget**, a selectable resource ceiling whose `Done()` channel closes on exhaustion so waits can stop before burning unbounded agent budget.
+- **Corpus**, a shared, conflict-free knowledge store for references rather than pasted context windows.
+- **Compactor**, turns rich working state into bounded handoff summaries plus corpus references.
+- **Nursery / Supervisor**, structured concurrency for agent trees: depth limits, parent-child routing guards, and subtree cancellation.
+- **Dead letters**, capture undeliverable routed messages for monitoring or tests instead of silently dropping them.
 - **Handoff**, move a task by sending it; ownership transfers with the message and the sender stops touching it (single-writer at a time).
 - **Tracer**, observe every message an agent saw and sent. Because all coordination is messages, the message stream is a COMPLETE trace, no hidden channel to instrument.
 
@@ -62,8 +68,11 @@ clarity and safety, not as a moat.
 ## Reference implementation (Go)
 
 The HandoffKit repo is one faithful instantiation, in Go, with deterministic
-unit tests and live LLM integration tests, under `sketch/` (interfaces) and
-`runtime/` (mailbox, selector, router, broker, join, trace). For a **Go**
-project, the `handoffkit-scaffold` skill drops these in. In **another language**,
-build the equivalent from the mapping table above, the design is identical, only
-the concurrency primitives differ.
+unit tests and live LLM integration tests. The `sketch/` package defines
+addresses, messages, mailboxes, agents, selectors, supervisors, corpora, and
+handoff context. The `runtime/` package implements channel-backed mailboxes,
+selectors, routers, brokers, join/quorum agents, budgets, corpus/compaction,
+nursery supervision, dead letters, and tracing. For a **Go** project, the
+`handoffkit-scaffold` skill drops these packages and their runtime tests in. In
+**another language**, build the equivalent from the mapping table above, the
+design is identical, only the concurrency primitives differ.
