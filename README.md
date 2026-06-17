@@ -1,0 +1,228 @@
+# HandoffKit
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/dyngai/handoffkit.svg)](https://pkg.go.dev/github.com/dyngai/handoffkit)
+[![Codex Plugin](https://img.shields.io/badge/Codex-Plugin-111111?logo=openai&logoColor=white)](https://developers.openai.com/codex/plugins)
+
+![HandoffKit overview: LLM agents coordinating through explicit messages, mailboxes, routing, select-style waits, pub/sub, handoffs, and traces](./assets/handoffkit-overview.png)
+
+**Reliable handoffs for AI agent systems.**
+
+HandoffKit is a Go reference implementation for coordinating LLM agents with
+explicit message passing instead of shared coordination scratchpads. It includes
+mailboxes, `select`-style waits, routed handoffs, joins/quorums, pub/sub,
+budgets, supervision, dead letters, corpus-backed compaction, and message-level
+tracing.
+
+> "Do not communicate by sharing memory; instead, share memory by communicating." (Rob Pike)
+
+- Interfaces: [`sketch/`](./sketch)
+- Runtime primitives: [`runtime/`](./runtime)
+- LLM-backed agents: [`llm/`](./llm)
+- Examples: [`examples/`](./examples)
+- Design notes: [`docs/`](./docs)
+
+## Core Idea
+
+Treat each agent as an actor: private state, an addressable mailbox, and a
+single-owner run loop. Move work by sending messages. Ownership transfers with
+the message, so the sender stops touching the task after handoff.
+
+Use message passing for control flow, and a shared conflict-free `Corpus` for
+knowledge. That keeps orchestration explicit without trying to ship an entire
+context window through prose.
+
+Why it helps:
+
+- `Select` waits on peer messages, interrupts, budgets, cancellation, and
+  timeouts in one place.
+- Single-owner handoff avoids shared-scratchpad races.
+- Unbuffered mailboxes provide natural backpressure.
+- `Tracer` gives a complete message-level record.
+
+## What Is Included
+
+| Primitive | Purpose |
+|---|---|
+| `ChanMailbox` | Channel-backed inbox; unbuffered mailboxes provide rendezvous/backpressure. |
+| `Selector` | `reflect.Select` over messages, deadlines, budgets, and cancellation. |
+| `Router` | Point-to-point delivery by address. |
+| `Broker` | Broadcast one event to every subscriber. |
+| `JoinAgent` / `QuorumAgent` | Fan-in barriers. |
+| `Budget` | Selectable resource ceiling. |
+| `Nursery` | Structured concurrency and topology guard. |
+| `MemCorpus` / `Compactor` | Shared referenced knowledge plus bounded handoff summaries. |
+| `WithDeadLetters` | Capture undeliverable messages. |
+| `RunTraced` / `Tracer` | Message-level observability. |
+
+The closest neighbors are generic actor libraries such as
+[`go-actor`](https://github.com/vladopajic/go-actor), BEAM-style agent runtimes
+such as [`mabeam`](https://github.com/nshkrdotcom/mabeam), and LLM frameworks
+such as [`llmgo`](https://github.com/hungpdn/llmgo). HandoffKit's niche is the
+combination: actor-style ownership, `select` composition, bounded handoff
+context, topology guards, and traceable LLM-agent runs.
+
+## Install as a Codex Plugin
+
+This repo is also a [Codex plugin](https://developers.openai.com/codex/plugins)
+with two skills:
+
+- `handoffkit`: language-agnostic design guidance for message-passing agents.
+- `handoffkit-scaffold`: copies the Go reference runtime into a Go project and
+  rewrites imports to the target module.
+
+Prereqs: Codex CLI installed and signed in with `codex login`.
+
+Add the GitHub marketplace source:
+
+```sh
+codex plugin marketplace add dyngai/handoffkit
+```
+
+For local development, launch Codex from this repo or register the local clone:
+
+```sh
+cd /path/to/handoffkit
+codex
+
+# or, from anywhere:
+codex plugin marketplace add /path/to/handoffkit
+```
+
+Then open `/plugins`, choose `dyngai/handoffkit` or **HandoffKit (local)**,
+open **HandoffKit**, and select **Install plugin**.
+
+Use it with the `@` picker:
+
+```text
+@handoffkit design a message-passing agent pool for triaging alerts.
+@handoffkit-scaffold scaffold the Go runtime primitives into this repo.
+```
+
+After editing plugin skills or manifests, restart Codex and refresh or reinstall
+the plugin from `/plugins`.
+
+Maintainers: the scaffold skill vendors a copy of `runtime/` and `sketch/`.
+After runtime changes, run:
+
+```sh
+make sync-plugin
+make check-plugin-sync
+```
+
+## Codex Session Example
+
+HandoffKit is useful when you want Codex to coordinate independent review or
+implementation agents with clear ownership.
+
+```text
+› $handoffkit please run 3 review agents in parallel in this repo
+```
+
+Codex used the HandoffKit skill, split the review into three scoped agents, and
+waited for their findings:
+
+```text
+Ampere     runtime/sketch concurrency review
+Heisenberg llm/examples integration review
+Poincare   docs/plugin/package review
+
+High findings:
+1. Nursery.Cancel could leave an in-flight Route blocked on a canceled destination.
+2. Compaction bounded Ctx.Summary but downstream prompts still received full Payload.
+
+Medium findings:
+- Run could hang with idle <= 0.
+- MemCorpus.Get returned mutable stored values.
+- HandoffContext.Thread was ignored by LLM agents.
+- Codex credential loading only supported ~/.codex/auth.json.
+- examples/trace-all discarded run and timeout errors.
+- README/plugin docs overstated cancellation, marketplace, reload, and license behavior.
+
+Checks reported by agents:
+- go test ./runtime ./sketch
+- go test -race -count=1 ./runtime ./sketch
+- go test ./llm ./examples/...
+- make check-plugin-sync
+- make test
+```
+
+Those findings were then fixed in parallel worktrees and verified with unit and
+integration tests.
+
+## Run It
+
+Requires Go 1.22+.
+
+```sh
+OPENAI_API_KEY=sk-... go run ./examples/handoff
+go run ./examples/compaction
+go run ./examples/pubsub
+```
+
+No-API topology sketches:
+
+```sh
+python3 examples/python/handoff.py
+tsx examples/typescript/handoff.ts
+```
+
+Codex-backed examples use the Codex CLI session rather than `OPENAI_API_KEY`:
+
+```sh
+go run ./examples/handoff-codex
+go run ./examples/trace-all
+go run ./examples/codex-workers
+```
+
+## Tests
+
+```sh
+make test                 # go test -race ./...
+make test-integration     # go test -tags=integration ./llm/...
+```
+
+Integration tests call live LLM backends:
+
+- OpenAI SDK path needs `OPENAI_API_KEY`.
+- Codex path needs a fresh `codex login`.
+- Missing credentials skip the corresponding integration tests.
+
+Use verbose integration output to see message traces:
+
+```sh
+go test -tags=integration -v ./llm/...
+```
+
+## What This Proves
+
+Proven by the tested code:
+
+- The runtime primitives compile and pass under `-race`.
+- `Select` composition works for messages, deadlines, and cancellation.
+- Real OpenAI and Codex-backed agents can coordinate by routed messages.
+- The same `Agent` abstraction works across the OpenAI SDK and Codex transport.
+
+Not proven:
+
+- That message passing beats blackboard/shared-memory agent systems.
+- That bounded summaries preserve reasoning fidelity across many hops.
+- Scale, cost, or reasoning quality.
+
+This is an existence proof and reference implementation, not a superiority
+benchmark.
+
+## Where It Snaps
+
+The Go/CSP analogy breaks for LLM agents:
+
+1. Messages are token-costly and lossy.
+2. Agents carry large private state in their context windows.
+3. Message ordering does not make model behavior deterministic.
+4. Deadlocks burn budget instead of panicking quickly.
+
+The practical split is: message passing for control flow, shared corpus
+references for knowledge. See [`docs/tradeoffs.md`](./docs/tradeoffs.md).
+
+## License
+
+MIT. See [LICENSE](./LICENSE).

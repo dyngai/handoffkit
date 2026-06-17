@@ -1,0 +1,224 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/dyngai/handoffkit/sketch"
+)
+
+// spawnAck registers an ackAgent under parent and returns it, failing the test
+// on a spawn error. The inbox is buffered so a router delivery never blocks the
+// test goroutine.
+func spawnAck(t *testing.T, n *Nursery, parent, addr, next sketch.Address) *ackAgent {
+	t.Helper()
+	a := &ackAgent{addr: addr, inbox: NewMailbox(4), next: next}
+	if _, err := n.Spawn(context.Background(), parent, a); err != nil {
+		t.Fatalf("spawn %q under %q: %v", addr, parent, err)
+	}
+	return a
+}
+
+// The depth/lineage guard: with maxDepth 1 a coordinator may spawn leaf workers,
+// but a worker may not spawn further (that would reach depth 2).
+func TestNursery_DepthGuardCapsLineage(t *testing.T) {
+	n := NewNursery(context.Background(), 1)
+
+	spawnAck(t, n, "", "coord", "")       // depth 0
+	spawnAck(t, n, "coord", "w", "coord") // depth 1, allowed
+
+	if d, _ := n.Depth("w"); d != 1 {
+		t.Fatalf("worker depth = %d, want 1", d)
+	}
+
+	// A worker spawning a grandchild would reach depth 2 > maxDepth 1: rejected.
+	grand := &ackAgent{addr: "g", inbox: NewMailbox(1)}
+	if _, err := n.Spawn(context.Background(), "w", grand); err == nil {
+		t.Fatal("spawn at depth 2 should be rejected by the depth/lineage guard")
+	}
+	if _, ok := n.Depth("g"); ok {
+		t.Fatal("a rejected spawn must not be registered in the tree")
+	}
+}
+
+// Spawn rejects an unknown parent and a duplicate address.
+func TestNursery_SpawnRejectsUnknownParentAndDuplicate(t *testing.T) {
+	n := NewNursery(context.Background(), 2)
+
+	if _, err := n.Spawn(context.Background(), "ghost", &ackAgent{addr: "x", inbox: NewMailbox(1)}); err == nil {
+		t.Fatal("spawn under an unregistered parent should error")
+	}
+	spawnAck(t, n, "", "root", "")
+	if _, err := n.Spawn(context.Background(), "", &ackAgent{addr: "root", inbox: NewMailbox(1)}); err == nil {
+		t.Fatal("spawning a duplicate address should error")
+	}
+}
+
+// Route enforces who-may-message-whom: parent<->child edges and external seeding
+// are deliverable; a sibling-to-sibling lateral message is not.
+func TestNursery_RouteEnforcesParentChildTopology(t *testing.T) {
+	n := NewNursery(context.Background(), 1)
+	spawnAck(t, n, "", "coord", "")
+	a := spawnAck(t, n, "coord", "a", "coord")
+	spawnAck(t, n, "coord", "b", "coord")
+	coordBox := n.router.boxes["coord"].(*ChanMailbox)
+
+	ctx := context.Background()
+
+	// External seeding into the root (From == "").
+	if err := n.Route(ctx, sketch.Msg{To: "coord", Payload: "seed"}); err != nil {
+		t.Fatalf("external seed to root: %v", err)
+	}
+	// Parent -> child.
+	if err := n.Route(ctx, sketch.Msg{From: "coord", To: "a", Payload: "task"}); err != nil {
+		t.Fatalf("coord -> a (parent->child): %v", err)
+	}
+	// Child -> parent.
+	if err := n.Route(ctx, sketch.Msg{From: "a", To: "coord", Payload: "reply"}); err != nil {
+		t.Fatalf("a -> coord (child->parent): %v", err)
+	}
+	// Sibling -> sibling: lateral delegation, denied.
+	if err := n.Route(ctx, sketch.Msg{From: "a", To: "b", Payload: "lateral"}); err == nil {
+		t.Fatal("a -> b (sibling lateral) should be a topology violation")
+	}
+	// Unregistered sender impersonating an agent: denied.
+	if err := n.Route(ctx, sketch.Msg{From: "nobody", To: "coord", Payload: "x"}); err == nil {
+		t.Fatal("message from an unregistered sender should error")
+	}
+	// Unknown destination: denied.
+	if err := n.Route(ctx, sketch.Msg{From: "coord", To: "ghost", Payload: "x"}); err == nil {
+		t.Fatal("message to an unknown destination should error")
+	}
+
+	// The allowed messages actually landed in coord's and a's inboxes.
+	if m, ok := tryRecv(coordBox); !ok || m.Payload != "seed" {
+		t.Fatalf("coord first message = (%q, %v), want (seed, true)", m.Payload, ok)
+	}
+	if m, ok := tryRecv(coordBox); !ok || m.Payload != "reply" {
+		t.Fatalf("coord second message = (%q, %v), want (reply, true)", m.Payload, ok)
+	}
+	if m, ok := tryRecv(a.inbox); !ok || m.Payload != "task" {
+		t.Fatalf("a message = (%q, %v), want (task, true)", m.Payload, ok)
+	}
+}
+
+// Cancel unwinds the whole subtree: a supervised worker's run loop exits when its
+// coordinator is cancelled, and the worker leaves the topology so later messages
+// to it are rejected.
+func TestNursery_CancelUnwindsSubtree(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	n := NewNursery(ctx, 1)
+	spawnAck(t, n, "", "coord", "")
+	worker := spawnAck(t, n, "coord", "w", "coord")
+
+	wctx, ok := n.Context("w")
+	if !ok {
+		t.Fatal("worker has no supervised context")
+	}
+
+	// Run the worker under its supervised context; with a long idle it blocks on
+	// the inbox until the context is cancelled.
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = Run(wctx, worker, n, time.Hour)
+		close(done)
+	}()
+
+	// It is running (not yet exited).
+	select {
+	case <-done:
+		t.Fatal("worker run loop exited before cancellation")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Cancelling the coordinator unwinds the subtree, so the worker exits.
+	if err := n.Cancel(context.Background(), "coord"); err != nil {
+		t.Fatalf("Cancel(coord): %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker run loop did not exit after the subtree was cancelled")
+	}
+	wg.Wait()
+
+	// Both are gone from the topology and the delivery table.
+	if _, ok := n.Depth("w"); ok {
+		t.Fatal("worker still in the tree after subtree cancel")
+	}
+	if _, ok := n.Depth("coord"); ok {
+		t.Fatal("coordinator still in the tree after cancel")
+	}
+	if err := n.Route(context.Background(), sketch.Msg{From: "", To: "w", Payload: "x"}); err == nil {
+		t.Fatal("routing to a cancelled agent should error (it left the topology)")
+	}
+
+	// Cancel of an unknown address errors.
+	if err := n.Cancel(context.Background(), "coord"); err == nil {
+		t.Fatal("re-cancelling an already-removed address should error")
+	}
+}
+
+// A Route already blocked in the destination mailbox must still return when the
+// destination is cancelled. This covers both unbuffered rendezvous mailboxes and
+// buffered mailboxes whose queue is full.
+func TestNursery_RouteUnblocksWhenDestinationCancelled(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		buffer  int
+		prefill bool
+	}{
+		{name: "unbuffered", buffer: 0},
+		{name: "full buffered", buffer: 1, prefill: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			n := NewNursery(context.Background(), 1)
+			coord := &ackAgent{addr: "coord", inbox: NewMailbox(1)}
+			workerInbox := NewMailbox(tt.buffer)
+			worker := &ackAgent{addr: "w", inbox: workerInbox}
+
+			if _, err := n.Spawn(context.Background(), "", coord); err != nil {
+				t.Fatalf("spawn coord: %v", err)
+			}
+			if _, err := n.Spawn(context.Background(), "coord", worker); err != nil {
+				t.Fatalf("spawn worker: %v", err)
+			}
+			if tt.prefill {
+				if err := workerInbox.Send(context.Background(), sketch.Msg{From: "coord", To: "w", Payload: "prefill"}); err != nil {
+					t.Fatalf("prefill worker inbox: %v", err)
+				}
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- n.Route(context.Background(), sketch.Msg{From: "coord", To: "w", Payload: "blocked"})
+			}()
+
+			select {
+			case err := <-done:
+				t.Fatalf("Route returned before Cancel (err=%v); test did not exercise a blocked send", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+
+			if err := n.Cancel(context.Background(), "w"); err != nil {
+				t.Fatalf("Cancel(w): %v", err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Route err = %v, want context.Canceled", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Route stayed blocked after destination Cancel")
+			}
+		})
+	}
+}

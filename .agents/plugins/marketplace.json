@@ -1,0 +1,20 @@
+{
+  "name": "handoffkit-local",
+  "interface": {
+    "displayName": "HandoffKit (local)"
+  },
+  "plugins": [
+    {
+      "name": "handoffkit",
+      "source": {
+        "source": "local",
+        "path": "./plugins/handoffkit"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

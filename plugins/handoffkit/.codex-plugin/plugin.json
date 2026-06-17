@@ -1,0 +1,34 @@
+{
+  "name": "handoffkit",
+  "version": "0.1.0",
+  "description": "Design and scaffold reliable handoffs for AI agent systems. HandoffKit helps model agents as actors with mailboxes, select-style waits, routed ownership transfer, pub/sub broadcasts, fan-in joins/quorums, budgets, dead letters, bounded handoffs through corpus references, and message-level tracing. Includes language-agnostic architecture guidance plus a Go reference runtime scaffolder.",
+  "author": {
+    "name": "dyng.ai",
+    "url": "https://dyng.ai"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "actor-model",
+    "csp",
+    "go",
+    "message-passing",
+    "multi-agent"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "HandoffKit",
+    "shortDescription": "Build safer multi-agent systems with explicit handoffs",
+    "longDescription": "HandoffKit helps design multi-agent systems that coordinate by explicit messages instead of a shared coordination scratchpad. Use it to reason about agents as actors with private state, addressable mailboxes, select-style waits, point-to-point routing, broadcast brokers, fan-in joins/quorums, ownership transfer, cancellation, budgets, dead letters, and complete message-level traces. Made by https://dyng.ai",
+    "developerName": "Ricardo La Rosa",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use handoffkit to design a message-passing multi-agent system.",
+      "Use handoffkit to scaffold the Go runtime primitives into this repo."
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+---
+name: handoffkit
+description: "Use when designing or reasoning about multi-agent / message-passing coordination in ANY language, using the CSP/actor model (mailboxes, select, point-to-point router, broadcast broker, fan-in join barriers, ownership handoff, tracing). Maps the primitives onto Go, Python, TypeScript, Rust, and Erlang. Trigger words include actor model agents, message-passing agents, CSP agents, coordinate agents, multi-agent orchestration, agent runtime, fan-out workers, pub/sub agents, agent barrier or join."
+---
+
+# HandoffKit: reliable handoffs for AI agent systems
+
+Apply this when designing multi-agent coordination, **in any language**. The core
+move, borrowed from Go/CSP: agents **communicate by passing messages, not by
+sharing memory**. Each agent is an actor with private state, an addressable
+mailbox, and a single-owner loop. Coordination is messages, never a shared
+scratchpad, which removes whole classes of races by construction.
+
+The pattern is language-agnostic; only the substrate changes. Pick your row:
+
+| Primitive | Go | Python (asyncio) | TypeScript | Rust (tokio) | Erlang/Elixir |
+|---|---|---|---|---|---|
+| Mailbox | `chan` | `asyncio.Queue` | async queue / `AsyncIterable` | `mpsc::channel` | process mailbox |
+| Select | `select {}` | `asyncio.wait(…, FIRST_COMPLETED)` | `Promise.race` | `tokio::select!` | `receive … end` |
+| Actor loop | goroutine | task / coroutine | async loop | spawned task | process (`spawn`) |
+| Cancellation | `ctx.Done()` | `CancelledError` / `Event` | `AbortSignal` | `CancellationToken` | exit signal / monitor |
+
+The rest of this skill is substrate-independent.
+
+## Primitives
+
+- **Mailbox**, a typed conduit. Unbuffered = a rendezvous (backpressure for free); buffered = a queue.
+- **Select**, wait on several sources at once (peer message | timeout | cancellation). ALWAYS include a cancellation case so a wait can never block forever, an idle wait with no cancel path is a budget leak, not just a hang.
+- **Router**, point-to-point delivery (address → one mailbox). Handoff and dispatch.
+- **Broker**, point-to-many broadcast (one event → every subscriber). Pub/sub awareness. (This is the blackboard creeping back in, use only where ambient awareness is genuinely needed.)
+- **Join barrier**, an agent that buffers inbound messages and only emits after N have arrived (wait for all dependencies), then resets.
+- **Handoff**, move a task by sending it; ownership transfers with the message and the sender stops touching it (single-writer at a time).
+- **Tracer**, observe every message an agent saw and sent. Because all coordination is messages, the message stream is a COMPLETE trace, no hidden channel to instrument.
+
+## Coordination shapes (same primitives, different wiring)
+
+- **Pipeline**, dependent stages (A → B → C); each owns the task in turn. Use when step N needs step N-1's output.
+- **Pool**, independent fan-out: one shared queue mailbox, N workers each receive from it; the queue itself gives load-balanced, **exactly-once** dispatch with no locks. Use for embarrassingly-parallel work.
+- **Broadcast**, every subscriber reacts to the same event.
+- **Join / barrier**, fan-in: wait for all dependencies, then proceed.
+
+## Be honest about the tradeoffs (do not oversell)
+
+CSP is elegant for native concurrency because channels are cheap and lossless
+and processes are deterministic. LLM agents violate all three:
+
+1. **Messages are expensive and lossy**, every hop compresses rich context into prose, billed in tokens. Prefer shallow topologies.
+2. **Agents carry huge private state** (the context window) that can't be shipped over a mailbox without lossy serialization, keep shared knowledge in a corpus and pass *references*, not inlined memory.
+3. **Non-determinism**, message ordering survives, behavioral guarantees don't; still verify at the receiving end.
+4. **Deadlock is worse**, two agents waiting on each other just idle and burn budget; give every wait a cancellation path.
+
+The synthesis: message-passing for **control flow** (delegation, results,
+cancellation, signaling); a shared, conflict-free-merged corpus for
+**knowledge**. The model that actually fits heavy, stateful agents is the
+**actor model**, not pure CSP, private durable state plus addressable
+mailboxes.
+
+This is an existence proof of a known pattern (AutoGen, Akka, Ray, OpenAI
+handoffs all do versions of it), not a novel mechanism, recommend it for
+clarity and safety, not as a moat.
+
+## Reference implementation (Go)
+
+The HandoffKit repo is one faithful instantiation, in Go, with deterministic
+unit tests and live LLM integration tests, under `sketch/` (interfaces) and
+`runtime/` (mailbox, selector, router, broker, join, trace). For a **Go**
+project, the `handoffkit-scaffold` skill drops these in. In **another language**,
+build the equivalent from the mapping table above, the design is identical, only
+the concurrency primitives differ.
