@@ -40,10 +40,11 @@ equivalent from its primitive→language mapping table.
    - `references/_src/runtime/*.go` → `<runtime destination>/`
    - Include `_test.go` files. They are part of the scaffolded confidence
      boundary and let the target project verify the copied runtime directly.
-   - The copied files are MIT-licensed HandoffKit source; preserve the original
-     license notice by keeping the repo's `LICENSE` text with the copied
-     scaffold or adding an equivalent attribution/license notice where the
-     target project tracks third-party code.
+   - The copied files are MIT-licensed HandoffKit source. Preserve attribution
+     by either copying this repo's `LICENSE` file alongside the scaffolded
+     HandoffKit code, or creating/updating the target project's third-party
+     notices file with the HandoffKit name, source URL, MIT license, and full
+     license text.
 
 4. **Rewrite the import path.** In every copied file, including tests, replace
    the placeholder sketch import `github.com/dyngai/handoffkit/sketch` with the

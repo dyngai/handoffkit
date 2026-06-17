@@ -60,9 +60,22 @@ func (stdSelector) Run(ctx context.Context, sel sketch.Select) (int, error) {
 	}()
 
 	for i, c := range sel.Cases {
-		// A Case should set exactly one of Mailbox/Done/After (see sketch.Case).
-		// If more than one is set, the first in this order wins: Mailbox, Done,
-		// After. An After of zero or less is treated as unset.
+		// A Case must set at most one effective wait source. An After of zero or
+		// less is treated as unset.
+		waitSources := 0
+		if c.Mailbox != nil {
+			waitSources++
+		}
+		if c.Done != nil {
+			waitSources++
+		}
+		if c.After > 0 {
+			waitSources++
+		}
+		if waitSources > 1 {
+			return -1, fmt.Errorf("handoffkit: case %d sets multiple wait sources; set exactly one of Mailbox, Done, or After", i)
+		}
+
 		switch {
 		case c.Mailbox != nil:
 			rv, ok := c.Mailbox.(Receiver)
@@ -83,8 +96,13 @@ func (stdSelector) Run(ctx context.Context, sel sketch.Select) (int, error) {
 	}
 
 	// Implicit cancellation case. An unbounded wait is a budget leak, not a hang.
-	rcases = append(rcases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
-	metas = append(metas, meta{orig: -1, kind: kindCtx})
+	if done := ctx.Done(); done != nil {
+		rcases = append(rcases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(done)})
+		metas = append(metas, meta{orig: -1, kind: kindCtx})
+	}
+	if len(rcases) == 0 {
+		return -1, fmt.Errorf("handoffkit: select has no live cases and context has no Done channel")
+	}
 
 	chosen, recv, recvOK := reflect.Select(rcases)
 	m := metas[chosen]

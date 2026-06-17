@@ -98,6 +98,9 @@ Use it with the `@` picker:
 @handoffkit-scaffold scaffold the Go runtime primitives into this repo.
 ```
 
+The examples in this README use `@handoffkit` and `@handoffkit-scaffold` as the
+documented Codex plugin trigger forms.
+
 After editing plugin skills or manifests, restart Codex and refresh or reinstall
 the plugin from `/plugins`.
 
@@ -116,7 +119,7 @@ HandoffKit is useful when you want Codex to coordinate independent review or
 implementation agents with clear ownership.
 
 ```text
-› $handoffkit please run 3 review agents in parallel in this repo
+› @handoffkit please run 3 review agents in parallel in this repo
 ```
 
 Codex used the HandoffKit skill, split the review into three scoped agents, and
@@ -164,8 +167,13 @@ No-API topology sketches:
 
 ```sh
 python3 examples/python/handoff.py
-tsx examples/typescript/handoff.ts
+node examples/typescript/handoff.ts
 ```
+
+The TypeScript sketch uses Node's built-in TypeScript type stripping, so it does
+not require `package.json`, `tsconfig.json`, or a local `tsx` install. Use a
+Node release with type stripping enabled by default; this is tested with Node.js
+24.
 
 Codex-backed examples use the Codex CLI session rather than `OPENAI_API_KEY`:
 

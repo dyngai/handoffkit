@@ -53,8 +53,8 @@ func TestBuildHandoff_CompactorBoundsAndAccumulatesRefs(t *testing.T) {
 		t.Fatalf("Refs[0] = %v, want the carried prior ref %v", hc.Refs[0], prior[0])
 	}
 	thisRef := hc.Refs[1]
-	if thisRef.Namespace != "handoff" || thisRef.Key != "agent-7" {
-		t.Fatalf("this step's ref = %v, want handoff/agent-7", thisRef)
+	if thisRef.Namespace != "handoff" || !strings.HasPrefix(thisRef.Key, "agent-7-") {
+		t.Fatalf("this step's ref = %v, want readable handoff/agent-7-*", thisRef)
 	}
 	// The full output is resolvable from the corpus.
 	v, ok, _ := corpus.Get(context.Background(), thisRef)
@@ -77,6 +77,40 @@ func TestBuildHandoff_DoesNotAliasPriorRefs(t *testing.T) {
 	hc.Refs[0] = sketch.MemoryRef{Namespace: "x", Key: "y"}
 	if prior[0].Key != "upstream-1" {
 		t.Fatal("buildHandoff aliased the caller's prior refs slice")
+	}
+}
+
+func TestBuildHandoff_CompactorRefsDoNotCollideAcrossRecreatedAgents(t *testing.T) {
+	corpus := runtime.NewCorpus(nil)
+	comp := runtime.NewCompactor(corpus, runtime.CompactPolicy{MaxSummaryBytes: 20}, nil)
+
+	first, err := buildHandoff(context.Background(), comp, "agent", 1, sketch.HandoffContext{}, "first output")
+	if err != nil {
+		t.Fatalf("first buildHandoff: %v", err)
+	}
+	second, err := buildHandoff(context.Background(), comp, "agent", 1, sketch.HandoffContext{}, "second output")
+	if err != nil {
+		t.Fatalf("second buildHandoff: %v", err)
+	}
+
+	if len(first.Refs) != 1 || len(second.Refs) != 1 {
+		t.Fatalf("Refs = %v and %v, want one ref per handoff", first.Refs, second.Refs)
+	}
+	if first.Refs[0] == second.Refs[0] {
+		t.Fatalf("refs collided for recreated addr/seq: %v", first.Refs[0])
+	}
+	for _, ref := range []sketch.MemoryRef{first.Refs[0], second.Refs[0]} {
+		if ref.Namespace != "handoff" || !strings.HasPrefix(ref.Key, "agent-1-") {
+			t.Fatalf("ref = %v, want readable handoff/agent-1-*", ref)
+		}
+	}
+	v, ok, _ := corpus.Get(context.Background(), first.Refs[0])
+	if !ok || v.(string) != "first output" {
+		t.Fatalf("first ref resolved to %q (ok=%v), want first output", v, ok)
+	}
+	v, ok, _ = corpus.Get(context.Background(), second.Refs[0])
+	if !ok || v.(string) != "second output" {
+		t.Fatalf("second ref resolved to %q (ok=%v), want second output", v, ok)
 	}
 }
 
@@ -117,19 +151,18 @@ func TestBuildPromptSkipsDuplicateSummaryPayload(t *testing.T) {
 	}
 }
 
-func TestBuildPromptSkipsStaleFullPayloadForCompactedHandoff(t *testing.T) {
-	full := strings.Repeat("FULL ", 200)
+func TestBuildPromptSkipsCompactedSummaryPayload(t *testing.T) {
 	summary := "FULL FULL FULL ...[truncated; full text in corpus]"
 	prompt := buildPrompt(sketch.Msg{
 		From:    "planner",
-		Payload: full,
+		Payload: summary,
 		Ctx: sketch.HandoffContext{
 			Summary: summary,
 			Refs:    []sketch.MemoryRef{{Namespace: "handoff", Key: "planner-1"}},
 		},
 	})
-	if strings.Contains(prompt, full) {
-		t.Fatal("prompt included stale full Payload despite compacted handoff context")
+	if strings.Contains(prompt, "Task:") {
+		t.Fatal("prompt appended compacted summary payload as task")
 	}
 	if !strings.Contains(prompt, summary) {
 		t.Fatal("prompt dropped the bounded summary")
@@ -147,6 +180,20 @@ func TestBuildPromptIncludesDistinctPayloadWithCompactedContext(t *testing.T) {
 	})
 	if !strings.Contains(prompt, "Task:\nwrite a fresh final answer from this context") {
 		t.Fatalf("prompt dropped distinct payload despite compacted context:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptIncludesDistinctPayloadWithTruncatedSummaryPrefix(t *testing.T) {
+	prompt := buildPrompt(sketch.Msg{
+		From:    "planner",
+		Payload: "outline summary for a new task the user just asked",
+		Ctx: sketch.HandoffContext{
+			Summary: "outline summary ...[truncated; full text in corpus]",
+			Refs:    []sketch.MemoryRef{{Namespace: "handoff", Key: "planner-1"}},
+		},
+	})
+	if !strings.Contains(prompt, "Task:\noutline summary for a new task the user just asked") {
+		t.Fatalf("prompt dropped distinct payload with truncated summary prefix:\n%s", prompt)
 	}
 }
 

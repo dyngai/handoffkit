@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/dyngai/handoffkit/runtime"
 	"github.com/dyngai/handoffkit/sketch"
@@ -57,13 +58,16 @@ func payloadDuplicatesBoundedContext(payload string, hc sketch.HandoffContext) b
 			return true
 		}
 	}
-	if len(hc.Refs) == 0 {
-		return false
+	return false
+}
+
+var handoffRefSeq atomic.Uint64
+
+func handoffRef(addr sketch.Address, seq int) sketch.MemoryRef {
+	return sketch.MemoryRef{
+		Namespace: "handoff",
+		Key:       fmt.Sprintf("%s-%d-%d", addr, seq, handoffRefSeq.Add(1)),
 	}
-	const truncMarker = " ...[truncated; full text in corpus]"
-	summary := strings.TrimSpace(hc.Summary)
-	prefix, truncated := strings.CutSuffix(summary, truncMarker)
-	return truncated && prefix != "" && strings.HasPrefix(payload, strings.TrimSpace(prefix))
 }
 
 // buildHandoff projects an agent's output onto the HandoffContext it ships.
@@ -82,7 +86,7 @@ func buildHandoff(ctx context.Context, compact *runtime.Compactor, addr sketch.A
 	if compact == nil {
 		return sketch.HandoffContext{Summary: out}, nil
 	}
-	ref := sketch.MemoryRef{Namespace: "handoff", Key: fmt.Sprintf("%s-%d", addr, seq)}
+	ref := handoffRef(addr, seq)
 	hc, err := compact.Compact(ctx, ref, runtime.WorkingState{Output: out, Thread: prior.Thread})
 	if err != nil {
 		return sketch.HandoffContext{}, err

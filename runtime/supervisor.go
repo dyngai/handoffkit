@@ -13,6 +13,7 @@ type node struct {
 	parent   sketch.Address
 	depth    int
 	children map[sketch.Address]struct{}
+	inbox    sketch.Mailbox
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
@@ -102,17 +103,19 @@ func (n *Nursery) Spawn(_ context.Context, parent sketch.Address, a sketch.Agent
 	}
 
 	cctx, cancel := context.WithCancel(n.rootCtx)
+	inbox := a.Inbox()
 	n.nodes[addr] = &node{
 		parent:   parent,
 		depth:    depth,
 		children: make(map[sketch.Address]struct{}),
+		inbox:    inbox,
 		ctx:      cctx,
 		cancel:   cancel,
 	}
 	if pnode != nil {
 		pnode.children[addr] = struct{}{}
 	}
-	n.router.Register(addr, a.Inbox())
+	n.router.Register(addr, inbox)
 	return addr, nil
 }
 
@@ -129,30 +132,51 @@ func (n *Nursery) Route(ctx context.Context, m sketch.Msg) error {
 		ctx = context.Background()
 	}
 
+	var (
+		toCtx     context.Context
+		toMailbox sketch.Mailbox
+		routeErr  error
+	)
+
 	n.mu.Lock()
 	to, toOK := n.nodes[m.To]
-	from, fromOK := n.nodes[m.From]
-	n.mu.Unlock()
-
 	if !toOK {
-		return fmt.Errorf("handoffkit: no agent registered for destination %q", m.To)
+		routeErr = fmt.Errorf("handoffkit: no agent registered for destination %q", m.To)
+	} else {
+		toCtx = to.ctx
+		toMailbox = to.inbox
+	}
+
+	var from *node
+	var fromOK bool
+	if m.From != "" {
+		from, fromOK = n.nodes[m.From]
 	}
 	switch {
+	case routeErr != nil:
 	case m.From == "":
 		// External seeding: a driver injecting work into a root agent.
 		if to.parent != "" {
-			return fmt.Errorf(
+			routeErr = fmt.Errorf(
 				"handoffkit: external seed may target only root agents, not child %q",
 				m.To)
 		}
 	case !fromOK:
-		return fmt.Errorf("handoffkit: message from unregistered sender %q", m.From)
+		routeErr = fmt.Errorf("handoffkit: message from unregistered sender %q", m.From)
 	case to.parent == m.From || from.parent == m.To:
 		// Parent -> child, or child -> parent: the only allowed edges.
 	default:
-		return fmt.Errorf(
+		routeErr = fmt.Errorf(
 			"handoffkit: topology violation: %q may not message %q (only parent<->child edges are routable)",
 			m.From, m.To)
+	}
+	n.mu.Unlock()
+
+	if routeErr != nil {
+		return routeErr
+	}
+	if toMailbox == nil {
+		return fmt.Errorf("handoffkit: nil mailbox registered for address %q", m.To)
 	}
 
 	// Deliver outside the lock: Send may block on an unbuffered/full mailbox.
@@ -162,12 +186,12 @@ func (n *Nursery) Route(ctx context.Context, m sketch.Msg) error {
 	defer cancel()
 	go func() {
 		select {
-		case <-to.ctx.Done():
+		case <-toCtx.Done():
 			cancel()
 		case <-routeCtx.Done():
 		}
 	}()
-	return n.router.Route(routeCtx, m)
+	return toMailbox.Send(routeCtx, m)
 }
 
 // Context returns the supervised context for addr, derived from the Nursery root

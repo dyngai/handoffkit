@@ -26,9 +26,8 @@ class Mailbox<T> {
   }
 
   recv(): Promise<T> {
-    const value = this.queued.shift();
-    if (value) {
-      return Promise.resolve(value);
+    if (this.queued.length > 0) {
+      return Promise.resolve(this.queued.shift() as T);
     }
     return new Promise((resolve) => this.waiters.push(resolve));
   }
