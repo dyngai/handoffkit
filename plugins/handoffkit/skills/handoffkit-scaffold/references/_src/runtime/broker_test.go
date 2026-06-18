@@ -49,41 +49,92 @@ func TestBroker_NoSubscribers(t *testing.T) {
 	}
 }
 
+func TestBroker_PublishClonesHandoffContextForSubscribers(t *testing.T) {
+	b := NewBroker()
+	sub0 := NewMailbox(1)
+	sub1 := NewMailbox(1)
+	b.Subscribe(sub0)
+	b.Subscribe(sub1)
+
+	msg := sketch.Msg{
+		Payload: "e",
+		Ctx: sketch.HandoffContext{
+			Summary: "summary",
+			Thread: []sketch.Turn{
+				{Role: "user", Content: "original thread 0"},
+				{Role: "assistant", Content: "original thread 1"},
+			},
+			Refs: []sketch.MemoryRef{
+				{Namespace: "ns", Key: "original-ref-0"},
+				{Namespace: "ns", Key: "original-ref-1"},
+			},
+		},
+	}
+
+	if err := b.Publish(context.Background(), msg); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	got0, ok, err := sub0.Recv(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("sub0 recv: ok=%v err=%v", ok, err)
+	}
+	got1, ok, err := sub1.Recv(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("sub1 recv: ok=%v err=%v", ok, err)
+	}
+
+	if &got0.Ctx.Thread[0] == &got1.Ctx.Thread[0] {
+		t.Fatal("subscriber messages share Ctx.Thread backing storage")
+	}
+	if &got0.Ctx.Refs[0] == &got1.Ctx.Refs[0] {
+		t.Fatal("subscriber messages share Ctx.Refs backing storage")
+	}
+
+	got0.Ctx.Thread[0].Content = "mutated thread"
+	got0.Ctx.Refs[0].Key = "mutated-ref"
+	if got := got1.Ctx.Thread[0].Content; got != "original thread 0" {
+		t.Fatalf("mutating sub0 Thread changed sub1 Thread to %q", got)
+	}
+	if got := got1.Ctx.Refs[0].Key; got != "original-ref-0" {
+		t.Fatalf("mutating sub0 Refs changed sub1 Refs to %q", got)
+	}
+}
+
 // Backpressure: Publish is synchronous fan-out, so an undrained subscriber
-// blocks the publisher until it is drained. Deterministic, the block is a hard
-// unbuffered-channel rendezvous, not a timing race.
+// blocks the publisher until it is released.
 func TestBroker_Backpressure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	b := NewBroker()
 	fast := NewMailbox(1) // buffered: accepts its copy immediately
-	slow := NewMailbox(0) // unbuffered, no receiver yet: will block Publish
+	slow := newBlockingMailbox()
 	b.Subscribe(fast)
 	b.Subscribe(slow)
 
 	done := make(chan error, 1)
 	go func() { done <- b.Publish(ctx, sketch.Msg{Payload: "e"}) }()
 
-	// Publish cannot complete while the slow subscriber has no receiver.
+	if m := <-slow.entered; m.Payload != "e" {
+		t.Fatalf("slow subscriber got %q, want e", m.Payload)
+	}
+	// Publish cannot complete while the slow subscriber has not released Send.
 	select {
 	case err := <-done:
-		t.Fatalf("Publish returned before slow subscriber drained (err=%v), no backpressure", err)
-	case <-time.After(50 * time.Millisecond):
-		// still blocked on the slow subscriber, as required
+		t.Fatalf("Publish returned before slow subscriber released Send (err=%v), no backpressure", err)
+	default:
 	}
 
-	// Drain it; Publish must now complete.
-	if _, ok, err := slow.Recv(ctx); err != nil || !ok {
-		t.Fatalf("slow.Recv: ok=%v err=%v", ok, err)
-	}
+	// Release it; Publish must now complete.
+	slow.releaseSend()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Publish after drain: %v", err)
+			t.Fatalf("Publish after release: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Publish did not complete after the slow subscriber drained")
+		t.Fatal("Publish did not complete after the slow subscriber released Send")
 	}
 }
 
@@ -95,17 +146,20 @@ func TestBroker_PublishCancellation(t *testing.T) {
 	defer cancel()
 
 	b := NewBroker()
-	slow := NewMailbox(0) // unbuffered, no receiver: Publish blocks here
+	slow := newBlockingMailbox()
 	b.Subscribe(slow)
 
 	done := make(chan error, 1)
 	go func() { done <- b.Publish(ctx, sketch.Msg{Payload: "e"}) }()
 
+	if m := <-slow.entered; m.Payload != "e" {
+		t.Fatalf("slow subscriber got %q, want e", m.Payload)
+	}
 	// Confirm it is blocked before cancelling.
 	select {
 	case err := <-done:
 		t.Fatalf("Publish returned before cancellation (err=%v)", err)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	cancel()
@@ -118,6 +172,49 @@ func TestBroker_PublishCancellation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Publish did not return after cancellation")
 	}
+}
+
+type blockingMailbox struct {
+	entered chan sketch.Msg
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingMailbox() *blockingMailbox {
+	return &blockingMailbox{
+		entered: make(chan sketch.Msg, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (m *blockingMailbox) Send(ctx context.Context, msg sketch.Msg) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case m.entered <- msg:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-m.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *blockingMailbox) Recv(context.Context) (sketch.Msg, bool, error) {
+	return sketch.Msg{}, false, nil
+}
+
+func (m *blockingMailbox) Close() error {
+	m.releaseSend()
+	return nil
+}
+
+func (m *blockingMailbox) releaseSend() {
+	m.once.Do(func() { close(m.release) })
 }
 
 // ackAgent acks every event it receives, so a broadcast's delivery count can be

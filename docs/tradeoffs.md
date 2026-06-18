@@ -23,7 +23,7 @@ Go's runtime detects all-goroutines-blocked deadlock and panics. Two agents each
 The resolution is the same one Pike gives for Go itself: it is **not either/or**. Go ships mutexes *and* channels and says use channels for orchestration/handoff and mutexes for guarding a small piece of shared state. The agent translation:
 
 - **Message passing for control flow**: delegation, results, cancellation, signalling. Ownership and `Select`-composition earn their keep here.
-- **Shared corpus for knowledge**: guarded by conflict-free merge (CRDT), not channelled as prose. This is the mutex's job done right: protect the small shared thing; don't channel-ify the world.
+- **Shared corpus for knowledge**: guarded by a merge function, not channelled as prose. The default is last-write-wins for single-writer artifact keys; conflict-free behavior requires a merge policy that is associative, commutative, and idempotent for keys with multiple writers. This is the mutex's job done right: protect the small shared thing; don't channel-ify the world.
 
 And the model that actually fits is the **actor model**, not pure CSP: message passing for coordination, but with private durable state and addressable mailboxes per agent. CSP supplies the discipline; actors supply the shape.
 

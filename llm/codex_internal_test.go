@@ -87,6 +87,63 @@ func TestParseResponsesStream_MalformedFrameIsError(t *testing.T) {
 	}
 }
 
+func TestParseResponsesStream_OutputLimit(t *testing.T) {
+	const chunkSize = 64 << 10
+	chunk := strings.Repeat("x", chunkSize)
+
+	var within strings.Builder
+	for i := 0; i < codexStreamMaxOutputBytes/chunkSize; i++ {
+		within.WriteString(sseFrames(fmt.Sprintf(`{"type":"response.output_text.delta","delta":%q}`, chunk)))
+	}
+	within.WriteString(sseFrames(`{"type":"response.completed","response":{"status":"completed"}}`))
+
+	out, err := parseResponsesStream(strings.NewReader(within.String()))
+	if err != nil {
+		t.Fatalf("parse at output limit: %v", err)
+	}
+	if len(out) != codexStreamMaxOutputBytes {
+		t.Fatalf("output len = %d, want %d", len(out), codexStreamMaxOutputBytes)
+	}
+
+	var over strings.Builder
+	for i := 0; i < codexStreamMaxOutputBytes/chunkSize; i++ {
+		over.WriteString(sseFrames(fmt.Sprintf(`{"type":"response.output_text.delta","delta":%q}`, chunk)))
+	}
+	over.WriteString(sseFrames(
+		`{"type":"response.output_text.delta","delta":"x"}`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	))
+	_, err = parseResponsesStream(strings.NewReader(over.String()))
+	if err == nil || !strings.Contains(err.Error(), "output exceeds") {
+		t.Fatalf("parse over output limit err = %v, want output limit error", err)
+	}
+}
+
+func TestParseResponsesStream_OversizedLineIsError(t *testing.T) {
+	body := "data: " + strings.Repeat("x", codexStreamMaxLineBytes)
+
+	_, err := parseResponsesStream(strings.NewReader(body))
+	if err == nil || !strings.Contains(err.Error(), "line exceeds") {
+		t.Fatalf("parse oversized line err = %v, want line limit error", err)
+	}
+}
+
+func TestParseResponsesStream_OversizedFrameIsError(t *testing.T) {
+	payload := strings.Repeat("x", 1024)
+	var body strings.Builder
+	for body.Len() <= codexStreamMaxFrameBytes+codexStreamMaxLineBytes {
+		body.WriteString("data: ")
+		body.WriteString(payload)
+		body.WriteByte('\n')
+	}
+	body.WriteByte('\n')
+
+	_, err := parseResponsesStream(strings.NewReader(body.String()))
+	if err == nil || !strings.Contains(err.Error(), "event frame exceeds") {
+		t.Fatalf("parse oversized frame err = %v, want frame limit error", err)
+	}
+}
+
 func jwtWithExp(exp int64) string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp)))
 	return "header." + payload + ".sig"
@@ -185,6 +242,27 @@ func TestCodexCompleteNilHTTPReturnsError(t *testing.T) {
 	_, err := c.Complete(context.Background(), "system", "user")
 	if err == nil || !strings.Contains(err.Error(), "HTTP is nil") {
 		t.Fatalf("Complete err = %v, want nil-HTTP error", err)
+	}
+}
+
+func TestCodexCompleteEmptyInstructionsReturnsLocalError(t *testing.T) {
+	called := false
+	c := &CodexClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			t.Fatal("transport should not be called for empty instructions")
+			return nil, nil
+		})},
+		Model:    DefaultCodexModel,
+		Endpoint: "https://codex.test/responses",
+	}
+
+	_, err := c.Complete(context.Background(), " \n\t ", "user")
+	if err == nil || !strings.Contains(err.Error(), "instructions are empty") {
+		t.Fatalf("Complete err = %v, want empty-instructions error", err)
+	}
+	if called {
+		t.Fatal("transport was called despite empty instructions")
 	}
 }
 

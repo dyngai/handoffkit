@@ -25,6 +25,12 @@ const CodexEndpoint = "https://chatgpt.com/backend-api/codex/responses"
 // Codex session. The backend validates it; it must match what your plan allows.
 const DefaultCodexModel = "gpt-5.5"
 
+const (
+	codexStreamMaxLineBytes   = 1 << 20 // 1 MiB
+	codexStreamMaxFrameBytes  = 2 << 20 // 2 MiB
+	codexStreamMaxOutputBytes = 4 << 20 // 4 MiB
+)
+
 // CodexClient calls the OpenAI Responses backend using the Codex CLI's
 // ChatGPT-account OAuth token (from ~/.codex/auth.json) instead of an API key.
 //
@@ -143,6 +149,9 @@ func (c *CodexClient) Complete(ctx context.Context, instructions, userText strin
 	if c.HTTP == nil {
 		return "", fmt.Errorf("codex client HTTP is nil")
 	}
+	if strings.TrimSpace(instructions) == "" {
+		return "", fmt.Errorf("codex instructions are empty")
+	}
 	payload := map[string]any{
 		"model":        c.Model,
 		"instructions": instructions, // required by the backend
@@ -191,10 +200,11 @@ func (c *CodexClient) Complete(ctx context.Context, instructions, userText strin
 // SSE frame (blank-line separated, data: lines joined), and unmodelled event
 // types are ignored.
 func parseResponsesStream(r io.Reader) (string, error) {
-	br := bufio.NewReader(r) // a Reader, not a Scanner, so there is no line-size cap
+	br := bufio.NewReader(r)
 
 	var out strings.Builder
 	var data strings.Builder // data: lines for the current SSE event
+	var lineBuf []byte
 	completed := false
 
 	handle := func() error {
@@ -218,6 +228,9 @@ func parseResponsesStream(r io.Reader) (string, error) {
 		}
 		switch ev.Type {
 		case "response.output_text.delta":
+			if out.Len()+len(ev.Delta) > codexStreamMaxOutputBytes {
+				return fmt.Errorf("codex stream output exceeds %d bytes", codexStreamMaxOutputBytes)
+			}
 			out.WriteString(ev.Delta)
 		case "response.completed":
 			completed = true
@@ -237,17 +250,41 @@ func parseResponsesStream(r io.Reader) (string, error) {
 	}
 
 	for {
-		line, err := br.ReadString('\n')
+		part, err := br.ReadSlice('\n')
+		if len(lineBuf)+len(part) > codexStreamMaxLineBytes {
+			return out.String(), fmt.Errorf("codex stream line exceeds %d bytes", codexStreamMaxLineBytes)
+		}
+		if err == bufio.ErrBufferFull {
+			lineBuf = append(lineBuf, part...)
+			continue
+		}
+
+		var line string
+		if len(lineBuf) > 0 {
+			lineBuf = append(lineBuf, part...)
+			line = string(lineBuf)
+			lineBuf = lineBuf[:0]
+		} else {
+			line = string(part)
+		}
 		trimmed := strings.TrimRight(line, "\r\n")
 		if trimmed == "" { // SSE event boundary
 			if e := handle(); e != nil {
 				return out.String(), e
 			}
 		} else if strings.HasPrefix(trimmed, "data:") {
+			payload := strings.TrimSpace(trimmed[len("data:"):])
+			extra := len(payload)
+			if data.Len() > 0 {
+				extra++
+			}
+			if data.Len()+extra > codexStreamMaxFrameBytes {
+				return out.String(), fmt.Errorf("codex stream event frame exceeds %d bytes", codexStreamMaxFrameBytes)
+			}
 			if data.Len() > 0 {
 				data.WriteByte('\n')
 			}
-			data.WriteString(strings.TrimSpace(trimmed[len("data:"):]))
+			data.WriteString(payload)
 		}
 		// other SSE fields (event:, id:, retry:) are ignored
 		if err != nil {

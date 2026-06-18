@@ -1,6 +1,6 @@
 {
   "name": "handoffkit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Design and scaffold reliable handoffs for coding agents. HandoffKit helps model agents as actors with mailboxes, select-style waits, routed ownership transfer, pub/sub broadcasts, fan-in joins/quorums, budgets, dead letters, bounded handoffs through corpus references, and message-level tracing. Includes language-agnostic architecture guidance plus a Go reference runtime scaffolder.",
   "author": {
     "name": "dyng.ai",

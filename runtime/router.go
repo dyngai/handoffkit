@@ -138,7 +138,7 @@ func RunTraced(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Dura
 			return nil
 		}
 		if trace != nil {
-			trace(TraceEvent{Agent: a.Address(), Dir: TraceRecv, Msg: got})
+			trace(TraceEvent{Agent: a.Address(), Dir: TraceRecv, Msg: cloneTraceMsg(got)})
 		}
 		outs, err := a.Step(ctx, got)
 		if err != nil {
@@ -153,7 +153,7 @@ func RunTraced(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Dura
 			if trace != nil {
 				// TraceSend records what the agent emitted; delivery (Route below)
 				// is a separate step that may still fail.
-				trace(TraceEvent{Agent: a.Address(), Dir: TraceSend, Msg: routed})
+				trace(TraceEvent{Agent: a.Address(), Dir: TraceSend, Msg: cloneTraceMsg(routed)})
 			}
 			if routed.To == "" {
 				continue // terminal output; nothing to route

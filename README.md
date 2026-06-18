@@ -36,9 +36,10 @@ Treat each agent as an actor: private state, an addressable mailbox, and a
 single-owner run loop. Move work by sending messages. Ownership transfers with
 the message, so the sender stops touching the task after handoff.
 
-Use message passing for control flow, and a shared conflict-free `Corpus` for
-knowledge. That keeps orchestration explicit without trying to ship an entire
-context window through prose.
+Use message passing for control flow, and a shared `Corpus` of referenced
+knowledge. Its default merge is last-write-wins for single-writer keys; use a
+merge policy that is associative, commutative, and idempotent when multiple
+agents write the same key.
 
 Why it helps:
 
@@ -81,8 +82,8 @@ LLM-agent domain together), the closest repos are:
 | Point-to-point routing | ✅ `Router` | ⚠️ DIY | ✅ `Registry` + send-to-pid | ✅ `LLMRouter`/`ChainRouter` |
 | Pub/sub broadcast | ✅ `Broker` | ❌ | ✅ `EventBus` | ❌ |
 | Fan-in join / quorum | ✅ `JoinAgent` / `QuorumAgent` | ❌ | ❌ | ❌ |
-| Budget ceiling as selectable value | ✅ `Budget.Done()` (token/$/calls/wall) | ❌ | ❌ | ❌ |
-| Shared knowledge store | ✅ `MemCorpus` (CRDT `Merge`) | ❌ | ❌ private state | ⚠️ shared memory + Redis |
+| Budget ceiling as selectable value | ✅ `Budget.Done()` over caller-defined units | ❌ | ❌ | ❌ |
+| Shared knowledge store | ✅ `MemCorpus` with pluggable `Merge` | ❌ | ❌ private state | ⚠️ shared memory + Redis |
 | Bounded/lossy handoff compaction | ✅ `Compactor` (measured) | ❌ | ❌ | ❌ |
 | Structured concurrency / topology guard | ✅ `Nursery` (depth/lineage, subtree `Cancel`) | ⚠️ `Combine` start/stop | ✅ OTP supervision trees | ⚠️ context cancel only |
 | Dead-letter capture | ✅ `WithDeadLetters` | ❌ | ⚠️ monitors / `:DOWN` | ❌ |
@@ -94,7 +95,7 @@ LLM-agent domain together), the closest repos are:
 ✅ first-class · ⚠️ partial/adjacent · ❌ absent
 
 No neighbor combines `Select`-composition, ownership-transfer `Handoff`, a
-selectable `Budget`, a CRDT `Corpus`, `Compactor`, fan-in `Join`/`Quorum`, a
+selectable `Budget`, a shared `Corpus`, `Compactor`, fan-in `Join`/`Quorum`, a
 topology-guarded `Nursery`, and message-level `Tracer`. That combination is the
 point; the individual pieces are deliberately unoriginal.
 
@@ -249,8 +250,9 @@ go run ./examples/codex-workers
 ## Tests
 
 ```sh
-make test                 # go test -race ./...
-make test-integration     # go test -tags=integration ./llm/...
+make test                 # go test -race -count=1 ./...
+make test-integration     # skips tests whose live backend is not configured
+make test-integration-ci  # race-enabled live tests; fails if no backend is configured
 ```
 
 Integration tests call live LLM backends:
@@ -258,6 +260,10 @@ Integration tests call live LLM backends:
 - OpenAI SDK path needs `OPENAI_API_KEY`.
 - Codex path is local and unsupported; it needs a fresh `codex login`.
 - Missing credentials skip the corresponding integration tests.
+- Normal CI should use the offline gates: `make test`, `make build`,
+  `make vet`, and `make check-plugin-sync`.
+- Credentialed live CI can additionally use `make test-integration-ci` so a run
+  cannot pass by skipping all live backends.
 
 Use verbose integration output to see message traces:
 

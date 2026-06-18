@@ -25,7 +25,7 @@ The second idea that transfers is **`select` as the unit of composition**. In Go
 Pure message passing fails for agents the moment you try to push the org's *entire knowledge* through channels as prose: it's lossy and it's expensive (see [tradeoffs.md](./tradeoffs.md)). So the design keeps a deliberate split, mirroring Go's own "use channels *and* mutexes" pragmatism:
 
 - **Message passing for control flow**: delegation, results, "I'm done," "I need X," cancellation. This is where ownership and `select`-composition pay off.
-- **Shared corpus for knowledge**: the actual accumulated facts stay in a shared store, because channelling them as prose is the lossy/expensive trap. The fix for blackboard *races* is not "abolish the board"; it's conflict-free merge (CRDT) so concurrent writers can't corrupt each other. That is the mutex's job, done right: guard the small shared thing; don't channel-ify the world.
+- **Shared corpus for knowledge**: the actual accumulated facts stay in a shared store, because channelling them as prose is the lossy/expensive trap. The default corpus merge is last-write-wins and is intended for single-writer keys such as minted handoff artifacts. If multiple agents write the same key, configure a merge policy that is associative, commutative, and idempotent. That is the mutex's job, done right: guard the small shared thing; don't channel-ify the world.
 
 Messages carry **references** into the corpus, not inlined copies of it. The conversation moves; the library stays put.
 

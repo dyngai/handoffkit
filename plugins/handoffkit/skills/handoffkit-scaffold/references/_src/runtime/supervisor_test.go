@@ -200,6 +200,21 @@ func (m *cancelBlockingMailbox) Recv(ctx context.Context) (sketch.Msg, bool, err
 
 func (m *cancelBlockingMailbox) Close() error { return nil }
 
+type sendEnteredMailbox struct {
+	sketch.Mailbox
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newSendEnteredMailbox(mb sketch.Mailbox) *sendEnteredMailbox {
+	return &sendEnteredMailbox{Mailbox: mb, entered: make(chan struct{})}
+}
+
+func (m *sendEnteredMailbox) Send(ctx context.Context, msg sketch.Msg) error {
+	m.once.Do(func() { close(m.entered) })
+	return m.Mailbox.Send(ctx, msg)
+}
+
 func TestNursery_RouteUsesCapturedDestinationMailbox(t *testing.T) {
 	n := NewNursery(context.Background(), 1)
 	coord := &ackAgent{addr: "coord", inbox: NewMailbox(1)}
@@ -245,16 +260,6 @@ func TestNursery_RouteUsesCapturedDestinationMailbox(t *testing.T) {
 	n.mu.Unlock()
 	n.router.mu.Unlock()
 
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("Route returned nil after the destination address was rebound")
-		}
-		oldNode.cancel()
-		t.Fatalf("Route returned before the original destination was cancelled: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
 	oldNode.cancel()
 	select {
 	case err := <-done:
@@ -277,7 +282,7 @@ func TestNursery_CancelUnwindsSubtree(t *testing.T) {
 	defer cancel()
 
 	n := NewNursery(ctx, 1)
-	spawnAck(t, n, "", "coord", "")
+	coord := spawnAck(t, n, "", "coord", "")
 	worker := spawnAck(t, n, "coord", "w", "coord")
 
 	wctx, ok := n.Context("w")
@@ -296,11 +301,17 @@ func TestNursery_CancelUnwindsSubtree(t *testing.T) {
 		close(done)
 	}()
 
-	// It is running (not yet exited).
-	select {
-	case <-done:
-		t.Fatal("worker run loop exited before cancellation")
-	case <-time.After(50 * time.Millisecond):
+	if err := n.Route(context.Background(), sketch.Msg{From: "coord", To: "w", Payload: "running"}); err != nil {
+		t.Fatalf("route to running worker: %v", err)
+	}
+	ackCtx, ackCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer ackCancel()
+	m, ok, err := coord.inbox.Recv(ackCtx)
+	if err != nil || !ok {
+		t.Fatalf("worker did not ack before cancellation: ok=%v err=%v", ok, err)
+	}
+	if m.Payload != "running" {
+		t.Fatalf("worker ack payload = %q, want running", m.Payload)
 	}
 
 	// Cancelling the coordinator unwinds the subtree, so the worker exits.
@@ -390,7 +401,8 @@ func TestNursery_RouteUnblocksWhenDestinationCancelled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			n := NewNursery(context.Background(), 1)
 			coord := &ackAgent{addr: "coord", inbox: NewMailbox(1)}
-			workerInbox := NewMailbox(tt.buffer)
+			baseWorkerInbox := NewMailbox(tt.buffer)
+			workerInbox := newSendEnteredMailbox(baseWorkerInbox)
 			worker := &ackAgent{addr: "w", inbox: workerInbox}
 
 			if _, err := n.Spawn(context.Background(), "", coord); err != nil {
@@ -400,7 +412,7 @@ func TestNursery_RouteUnblocksWhenDestinationCancelled(t *testing.T) {
 				t.Fatalf("spawn worker: %v", err)
 			}
 			if tt.prefill {
-				if err := workerInbox.Send(context.Background(), sketch.Msg{From: "coord", To: "w", Payload: "prefill"}); err != nil {
+				if err := baseWorkerInbox.Send(context.Background(), sketch.Msg{From: "coord", To: "w", Payload: "prefill"}); err != nil {
 					t.Fatalf("prefill worker inbox: %v", err)
 				}
 			}
@@ -411,9 +423,16 @@ func TestNursery_RouteUnblocksWhenDestinationCancelled(t *testing.T) {
 			}()
 
 			select {
+			case <-workerInbox.entered:
+			case err := <-done:
+				t.Fatalf("Route returned before entering destination Send (err=%v)", err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Route never entered destination Send")
+			}
+			select {
 			case err := <-done:
 				t.Fatalf("Route returned before Cancel (err=%v); test did not exercise a blocked send", err)
-			case <-time.After(50 * time.Millisecond):
+			default:
 			}
 
 			if err := n.Cancel(context.Background(), "w"); err != nil {

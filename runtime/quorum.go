@@ -26,6 +26,10 @@ type QuorumAgent struct {
 	need    int
 	total   int
 	combine func([]sketch.Msg) sketch.Msg
+	rounds  map[string]*quorumRound
+}
+
+type quorumRound struct {
 	buf     []sketch.Msg
 	seen    int
 	emitted bool
@@ -61,32 +65,43 @@ func (a *QuorumAgent) Address() sketch.Address { return a.addr }
 // Inbox implements sketch.Agent.
 func (a *QuorumAgent) Inbox() sketch.Mailbox { return a.inbox }
 
-// Step counts the arrival; emits the combined quorum once the `need`-th message
-// of the round has arrived; and resets after the `total`-th so the next round is
-// independent. Arrivals after the quorum is met are drained (counted) but not
-// emitted, the stragglers a quorum deliberately ignores.
+// Step counts the arrival for in.CorrelationID; emits the combined quorum once
+// the `need`-th message of that round has arrived; and forgets the round after
+// the `total`-th arrival. Arrivals after the quorum is met are drained
+// (counted) for that same correlation id but not emitted, the stragglers a
+// quorum deliberately ignores. Messages with an empty CorrelationID share the
+// legacy unkeyed stream; overlapping rounds must use distinct correlation ids.
 func (a *QuorumAgent) Step(_ context.Context, in sketch.Msg) ([]sketch.Msg, error) {
-	a.seen++
+	if a.rounds == nil {
+		a.rounds = make(map[string]*quorumRound)
+	}
+
+	key := in.CorrelationID
+	round := a.rounds[key]
+	if round == nil {
+		round = &quorumRound{}
+		a.rounds[key] = round
+	}
+	round.seen++
 
 	var out []sketch.Msg
-	if !a.emitted {
-		a.buf = append(a.buf, in)
-		if len(a.buf) >= a.need {
+	if !round.emitted {
+		round.buf = append(round.buf, in)
+		if len(round.buf) >= a.need {
 			// Run combine before clearing the buffer so a panicking user combine
 			// does not silently drop the quorum.
-			m := a.combine(a.buf)
-			a.buf = nil
-			a.emitted = true
+			m := a.combine(round.buf)
+			round.buf = nil
+			round.emitted = true
 			m.From = a.addr
 			m.To = a.next
+			m.CorrelationID = key
 			out = []sketch.Msg{m}
 		}
 	}
 
-	if a.seen >= a.total { // round complete: reset for the next one
-		a.seen = 0
-		a.emitted = false
-		a.buf = nil
+	if round.seen >= a.total { // round complete: reset for the next one
+		delete(a.rounds, key)
 	}
 	return out, nil
 }

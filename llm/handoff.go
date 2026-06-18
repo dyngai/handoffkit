@@ -15,8 +15,8 @@ import (
 const defaultPromptRefBytes = 8 * 1024
 
 // buildPrompt turns the owned message state into the user-facing text sent to
-// an LLM. HandoffContext.Thread is included verbatim because callers use it for
-// recent turns that should survive a handoff.
+// an LLM. HandoffContext data is rendered as data blocks so handed content
+// cannot masquerade as prompt structure.
 func buildPrompt(in sketch.Msg) string {
 	prompt, _ := buildPromptWithCorpus(context.Background(), in, nil, 0)
 	return prompt
@@ -28,22 +28,17 @@ func buildPromptWithCorpus(ctx context.Context, in sketch.Msg, corpus sketch.Cor
 		b.WriteString("Context handed from ")
 		b.WriteString(string(in.From))
 		b.WriteString(":\n")
-		b.WriteString(in.Ctx.Summary)
-		b.WriteString("\n\n")
+		writeDataBlock(&b, "summary", in.Ctx.Summary)
 	}
 	if len(in.Ctx.Thread) > 0 {
 		b.WriteString("Recent thread handed from ")
 		b.WriteString(string(in.From))
 		b.WriteString(":\n")
 		for _, turn := range in.Ctx.Thread {
-			role := strings.TrimSpace(turn.Role)
-			if role == "" {
-				role = "turn"
-			}
+			role := normalizeThreadRole(turn.Role)
 			b.WriteString(role)
 			b.WriteString(":\n")
-			b.WriteString(turn.Content)
-			b.WriteString("\n")
+			writeDataBlock(&b, "thread turn", turn.Content)
 		}
 		b.WriteString("\n")
 	}
@@ -56,9 +51,42 @@ func buildPromptWithCorpus(ctx context.Context, in sketch.Msg, corpus sketch.Cor
 	}
 	if in.Payload != "" && !payloadDuplicatesContextSummary(in.Payload, in.Ctx) {
 		b.WriteString("Task:\n")
-		b.WriteString(in.Payload)
+		writeDataBlock(&b, "payload", in.Payload)
 	}
 	return b.String(), nil
+}
+
+func normalizeThreadRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user", "assistant", "tool":
+		return strings.ToLower(strings.TrimSpace(role))
+	default:
+		return "turn"
+	}
+}
+
+func writeDataBlock(b *strings.Builder, label, text string) {
+	upper := strings.ToUpper(label)
+	b.WriteString("BEGIN ")
+	b.WriteString(upper)
+	b.WriteString(" DATA\n")
+	writePrefixedData(b, text)
+	b.WriteString("\nEND ")
+	b.WriteString(upper)
+	b.WriteString(" DATA\n\n")
+}
+
+func writePrefixedData(b *strings.Builder, text string) {
+	for {
+		line, rest, found := strings.Cut(text, "\n")
+		b.WriteString("| ")
+		b.WriteString(line)
+		if !found {
+			return
+		}
+		b.WriteString("\n")
+		text = rest
+	}
 }
 
 func payloadDuplicatesContextSummary(payload string, hc sketch.HandoffContext) bool {
@@ -66,8 +94,11 @@ func payloadDuplicatesContextSummary(payload string, hc sketch.HandoffContext) b
 }
 
 func resolvedCorpusRefs(ctx context.Context, from sketch.Address, refs []sketch.MemoryRef, corpus sketch.Corpus, maxBytes int) (string, error) {
-	if corpus == nil || maxBytes <= 0 || len(refs) == 0 {
+	if len(refs) == 0 {
 		return "", nil
+	}
+	if corpus == nil || maxBytes <= 0 {
+		return unresolvedCorpusRefs(from, refs, "corpus unavailable or ref budget disabled"), nil
 	}
 	var b strings.Builder
 	remaining := maxBytes
@@ -97,20 +128,20 @@ func resolvedCorpusRefs(ctx context.Context, from sketch.Address, refs []sketch.
 		if err != nil {
 			return "", fmt.Errorf("resolve corpus ref %s/%s: %w", ref.Namespace, ref.Key, err)
 		}
-		if !ok {
-			continue
-		}
 		if !start() {
 			break
 		}
 		if !write("[" + ref.Namespace + "/" + ref.Key + "]\n") {
 			break
 		}
-		if !write(corpusValueText(v)) {
-			break
-		}
-		if !write("\n") {
-			break
+		if !ok {
+			if !write("[missing corpus ref]\n") {
+				break
+			}
+		} else {
+			if !writeDataBlockString("corpus ref", corpusValueText(v), write) {
+				break
+			}
 		}
 	}
 	if !started {
@@ -120,6 +151,49 @@ func resolvedCorpusRefs(ctx context.Context, from sketch.Address, refs []sketch.
 		b.WriteString("\n")
 	}
 	return b.String(), nil
+}
+
+func unresolvedCorpusRefs(from sketch.Address, refs []sketch.MemoryRef, reason string) string {
+	var b strings.Builder
+	b.WriteString("Referenced corpus content handed from ")
+	b.WriteString(string(from))
+	b.WriteString(":\n")
+	for _, ref := range refs {
+		b.WriteString("[")
+		b.WriteString(ref.Namespace)
+		b.WriteString("/")
+		b.WriteString(ref.Key)
+		b.WriteString("]\n")
+		b.WriteString("[unresolved corpus ref: ")
+		b.WriteString(reason)
+		b.WriteString("]\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func writeDataBlockString(label, text string, write func(string) bool) bool {
+	upper := strings.ToUpper(label)
+	if !write("BEGIN " + upper + " DATA\n") {
+		return false
+	}
+	for {
+		line, rest, found := strings.Cut(text, "\n")
+		if !write("| " + line) {
+			return false
+		}
+		if !found {
+			break
+		}
+		if !write("\n") {
+			return false
+		}
+		text = rest
+	}
+	if !write("\nEND " + upper + " DATA\n") {
+		return false
+	}
+	return true
 }
 
 func corpusValueText(v any) string {

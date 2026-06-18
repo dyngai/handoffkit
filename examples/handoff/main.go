@@ -61,7 +61,7 @@ func main() {
 		"writer", client, model,
 		"You are a writer. Follow the handed-over outline exactly and produce the final answer. Be concise.",
 		"out", writerIn,
-	).WithCompactor(comp)
+	).WithCompactor(comp).WithFullOutputPayload()
 
 	r.Register(planner.Address(), plannerIn)
 	r.Register(writer.Address(), writerIn)
@@ -69,12 +69,14 @@ func main() {
 
 	// Each agent runs as a goroutine on its single-owner loop.
 	var wg sync.WaitGroup
-	for _, a := range []sketch.Agent{planner, writer} {
+	agents := []sketch.Agent{planner, writer}
+	errCh := make(chan error, len(agents))
+	for _, a := range agents {
 		wg.Add(1)
 		go func(a sketch.Agent) {
 			defer wg.Done()
 			if err := runtime.Run(ctx, a, r, 30*time.Second); err != nil {
-				fmt.Fprintf(os.Stderr, "agent %s stopped: %v\n", a.Address(), err)
+				errCh <- fmt.Errorf("agent %s stopped: %w", a.Address(), err)
 			}
 		}(a)
 	}
@@ -86,13 +88,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wait for the final result OR a timeout, the select-composition point.
+	// Wait for the final result OR an agent error OR a timeout.
 	var final sketch.Msg
-	sel := runtime.NewSelector()
-	_, err := sel.Run(ctx, sketch.Select{Cases: []sketch.Case{
-		{Mailbox: out, OnRecv: func(m sketch.Msg) error { final = m; return nil }},
-		{After: 80 * time.Second, OnAfter: func() error { return fmt.Errorf("timed out waiting for result") }},
-	}})
+	timer := time.NewTimer(80 * time.Second)
+	defer timer.Stop()
+	var err error
+	select {
+	case m, ok := <-out.C():
+		if !ok {
+			err = fmt.Errorf("out mailbox closed")
+		} else {
+			final = m
+		}
+	case err = <-errCh:
+	case <-timer.C:
+		err = fmt.Errorf("timed out waiting for result")
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
 	cancel()
 	wg.Wait()
 

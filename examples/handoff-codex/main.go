@@ -60,12 +60,14 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	for _, a := range []sketch.Agent{planner, writer} {
+	agents := []sketch.Agent{planner, writer}
+	errCh := make(chan error, len(agents))
+	for _, a := range agents {
 		wg.Add(1)
 		go func(a sketch.Agent) {
 			defer wg.Done()
 			if err := runtime.RunTraced(ctx, a, r, 60*time.Second, trace); err != nil {
-				fmt.Fprintf(os.Stderr, "agent %s stopped: %v\n", a.Address(), err)
+				errCh <- fmt.Errorf("agent %s stopped: %w", a.Address(), err)
 			}
 		}(a)
 	}
@@ -77,11 +79,22 @@ func main() {
 	}
 
 	var final string
-	sel := runtime.NewSelector()
-	_, serr := sel.Run(ctx, sketch.Select{Cases: []sketch.Case{
-		{Mailbox: out, OnRecv: func(m sketch.Msg) error { final = m.Payload; return nil }},
-		{After: 3 * time.Minute, OnAfter: func() error { return fmt.Errorf("timed out waiting for result") }},
-	}})
+	timer := time.NewTimer(3 * time.Minute)
+	defer timer.Stop()
+	var serr error
+	select {
+	case m, ok := <-out.C():
+		if !ok {
+			serr = fmt.Errorf("out mailbox closed")
+		} else {
+			final = m.Payload
+		}
+	case serr = <-errCh:
+	case <-timer.C:
+		serr = fmt.Errorf("timed out waiting for result")
+	case <-ctx.Done():
+		serr = ctx.Err()
+	}
 	cancel()
 	wg.Wait()
 

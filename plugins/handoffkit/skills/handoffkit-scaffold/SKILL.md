@@ -41,10 +41,11 @@ equivalent from its primitive→language mapping table.
    - Include `_test.go` files. They are part of the scaffolded confidence
      boundary and let the target project verify the copied runtime directly.
    - The copied files are MIT-licensed HandoffKit source. Preserve attribution
-     by either copying this repo's `LICENSE` file alongside the scaffolded
-     HandoffKit code, or creating/updating the target project's third-party
-     notices file with the HandoffKit name, source URL, MIT license, and full
-     license text.
+     by either copying the bundled HandoffKit license from this repo's root
+     `LICENSE` file alongside the scaffolded HandoffKit code, or
+     creating/updating the target project's third-party notices file with the
+     HandoffKit name, source URL `https://github.com/dyngai/handoffkit`, MIT
+     license, and full license text from that bundled root `LICENSE` file.
 
 4. **Rewrite the import path.** In every copied file, including tests, replace
    the placeholder sketch import `github.com/dyngai/handoffkit/sketch` with the

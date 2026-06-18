@@ -37,16 +37,19 @@ type Turn struct {
 type HandoffContext struct {
 	Summary string      // deliberately-lossy prose projection of working state
 	Thread  []Turn      // optional recent turns the receiver needs verbatim
-	Refs    []MemoryRef // cheap, shared, conflict-free pointers into the corpus
+	Refs    []MemoryRef // cheap pointers into the shared corpus
 }
 
-// Msg is the envelope handed between agents. Payload is the agent-facing
-// content (prose/tokens); Ctx accompanies it on ownership transfer.
+// Msg is the envelope handed between agents. CorrelationID groups related
+// messages in multi-reply flows such as quorum rounds. Payload is the
+// agent-facing content (prose/tokens); Ctx accompanies it on ownership
+// transfer.
 type Msg struct {
-	From    Address
-	To      Address
-	Payload string
-	Ctx     HandoffContext
+	From          Address
+	To            Address
+	CorrelationID string
+	Payload       string
+	Ctx           HandoffContext
 }
 
 // Mailbox is a typed conduit between agents, the channel analogue.
@@ -62,7 +65,8 @@ type Msg struct {
 // a programming error; Recv on a closed-and-drained mailbox returns ok == false.
 type Mailbox interface {
 	// Send delivers m, blocking according to the buffering policy and honoring
-	// ctx cancellation. A nil error means the receiver has taken ownership.
+	// ctx cancellation. A nil error means the mailbox accepted the message and
+	// the sender relinquishes ownership.
 	Send(ctx context.Context, m Msg) error
 	// Recv returns the next message. ok is false once the mailbox is closed and
 	// drained.
@@ -135,11 +139,14 @@ type Supervisor interface {
 
 // Corpus is the shared knowledge substrate, the one place the blackboard wins.
 // It is deliberately NOT a Mailbox: knowledge stays put and is referenced, not
-// channelled as prose. Concurrent writers are reconciled by conflict-free merge
-// (CRDT), which is the mutex's job done right: guard the small shared thing.
+// channelled as prose. The merge policy defines write semantics: single-writer
+// artifact keys can use last-write-wins, while true multi-writer keys need a
+// merge policy that is associative, commutative, and idempotent to avoid
+// order-dependent results.
 type Corpus interface {
 	Get(ctx context.Context, ref MemoryRef) (value any, ok bool, err error)
-	// Merge applies a conflict-free update. Concurrent Merges must commute so
-	// two agents writing the same key cannot corrupt each other.
+	// Merge applies an update. Concurrent Merges of the same key need a
+	// merge policy that is associative, commutative, and idempotent to avoid
+	// order-dependent results.
 	Merge(ctx context.Context, ref MemoryRef, delta any) error
 }

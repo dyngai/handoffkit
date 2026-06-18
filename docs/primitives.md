@@ -25,11 +25,11 @@ The sketch is interface-only, but [`../runtime/`](../runtime) is a working, unit
 | Run loop | `Run` / `RunTraced` | single-owner loop; delivers outputs via a `Dispatcher` |
 | Trace | `Tracer` | every message an agent saw (`TraceRecv`) and sent (`TraceSend`) |
 | Fan-in barrier | `JoinAgent` | emit once all N of a batch arrive, then reset |
-| Fan-in quorum | `QuorumAgent` | emit on the first `need` of `total`; drop the stragglers |
+| Fan-in quorum | `QuorumAgent` | emit on the first `need` of `total`; drop same-`CorrelationID` stragglers |
 | Structured concurrency | `Nursery` | implements `Supervisor`: depth/lineage guard, topology-enforced `Route`, subtree `Cancel` |
-| Shared knowledge | `MemCorpus` | implements `Corpus`: namespaced KV reconciled by a conflict-free `Merge` |
+| Shared knowledge | `MemCorpus` | implements `Corpus`: namespaced KV with a pluggable `Merge` |
 | Bounded handoff | `Compactor` | offloads the full output to the `Corpus`, hands off a budget-bounded `Summary` + refs |
-| Resource ceiling | `Budget` | a selectable `Done()` that closes on token / dollar / call / wall-clock exhaustion |
+| Resource ceiling | `Budget` | a selectable `Done()` that closes when caller-defined units are spent |
 | Failure capture | `WithDeadLetters` | wraps any `Dispatcher` so an undeliverable message is captured (with its reason), not fatal |
 
 `Router`, `Nursery`, and `WithDeadLetters` all satisfy the `Dispatcher` interface, so `Run` composes them: `Run(ctx, agent, WithDeadLetters(nursery, sink), idle)` runs an agent under a topology guard whose undeliverable outputs land in a dead-letter sink.
@@ -66,7 +66,7 @@ Everything hard about orchestration (HITL interrupts, cancellation, budget ceili
 
 A handoff moves a task from agent A to agent B. What travels is the task **plus the context B needs to act**, expressed as `References` into the shared corpus rather than inlined memory. After the send, A no longer owns the task and must not act on it. This is the single-writer guarantee restated at the agent level, and the reason there is no race to guard against.
 
-The unavoidable tension lives here: B needs *enough* context to act, but the context window is private and serializing it is lossy and costly. The design pushes as much as possible into corpus *references* (cheap, shared, conflict-free) and accepts that the prose summary that accompanies a handoff is a lossy projection. Minimizing that loss is the open research question (see [tradeoffs.md](./tradeoffs.md)).
+The unavoidable tension lives here: B needs *enough* context to act, but the context window is private and serializing it is lossy and costly. The design pushes as much as possible into corpus *references* (cheap and shared) and accepts that the prose summary that accompanies a handoff is a lossy projection. Use a merge policy that is associative, commutative, and idempotent for any corpus key with multiple writers. Minimizing that loss is the open research question (see [tradeoffs.md](./tradeoffs.md)).
 
 This is now concrete, not just a sketch: `Compactor` writes an agent's full output to a `MemCorpus` and ships a budget-bounded `Summary` plus a `MemoryRef`, and `OpenAIAgent`/`CodexAgent` opt in via `WithCompactor`. `examples/compaction` measures the difference deterministically: down a 4-hop chain the naive full-output handoff grows the prose every hop (0, 598, 1197, 1796 bytes) while the compacted one stays flat (160 bytes) and every hop's full detail is recovered by walking the refs. The *mechanism* exists; the open part is the *quality* of the projection (see tradeoffs §"open problem").
 

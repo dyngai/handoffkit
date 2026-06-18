@@ -77,12 +77,12 @@ func pipeline(ctx context.Context, c *llm.CodexClient, trace runtime.Tracer) err
 	r.Register("writer", writerIn)
 	r.Register("out", out)
 
-	stop, wait := drive(ctx, trace, r, planner, writer)
+	stop, agentErrs, wait := drive(ctx, trace, r, planner, writer)
 	if err := plannerIn.Send(ctx, sketch.Msg{From: "user", To: "planner", Payload: "Why does message passing beat shared memory for agents?"}); err != nil {
 		stop()
 		return errors.Join(fmt.Errorf("send planner task: %w", err), wait())
 	}
-	if err := collectOne(ctx, out); err != nil {
+	if err := collectOne(ctx, out, agentErrs); err != nil {
 		stop()
 		return errors.Join(err, wait())
 	}
@@ -100,7 +100,7 @@ func pool(ctx context.Context, c *llm.CodexClient, trace runtime.Tracer) error {
 	w0 := llm.NewCodexAgent("worker-0", c, "Reply with exactly the single uppercase word the user names, nothing else.", "results", queue)
 	w1 := llm.NewCodexAgent("worker-1", c, "Reply with exactly the single uppercase word the user names, nothing else.", "results", queue)
 
-	stop, wait := drive(ctx, trace, r, w0, w1)
+	stop, agentErrs, wait := drive(ctx, trace, r, w0, w1)
 	for _, m := range markers {
 		if err := queue.Send(ctx, sketch.Msg{From: "dispatcher", To: "queue", Payload: "Reply with exactly: " + m}); err != nil {
 			stop()
@@ -108,7 +108,7 @@ func pool(ctx context.Context, c *llm.CodexClient, trace runtime.Tracer) error {
 		}
 	}
 	for range markers {
-		if err := collectOne(ctx, results); err != nil {
+		if err := collectOne(ctx, results, agentErrs); err != nil {
 			stop()
 			return errors.Join(err, wait())
 		}
@@ -131,13 +131,13 @@ func broadcast(ctx context.Context, c *llm.CodexClient, trace runtime.Tracer) er
 		subs = append(subs, s)
 	}
 
-	stop, wait := drive(ctx, trace, r, subs...)
+	stop, agentErrs, wait := drive(ctx, trace, r, subs...)
 	if err := broker.Publish(ctx, sketch.Msg{From: "publisher", Payload: "Reply with exactly: ACK"}); err != nil {
 		stop()
 		return errors.Join(fmt.Errorf("publish broadcast: %w", err), wait())
 	}
 	for range subs {
-		if err := collectOne(ctx, acks); err != nil {
+		if err := collectOne(ctx, acks, agentErrs); err != nil {
 			stop()
 			return errors.Join(err, wait())
 		}
@@ -148,7 +148,7 @@ func broadcast(ctx context.Context, c *llm.CodexClient, trace runtime.Tracer) er
 
 // drive runs each agent on a child context (so a shape can be stopped before the
 // next one starts) with the tracer attached.
-func drive(ctx context.Context, trace runtime.Tracer, r *runtime.Router, agents ...sketch.Agent) (context.CancelFunc, func() error) {
+func drive(ctx context.Context, trace runtime.Tracer, r *runtime.Router, agents ...sketch.Agent) (context.CancelFunc, <-chan error, func() error) {
 	sctx, scancel := context.WithCancel(ctx)
 	wg := &sync.WaitGroup{}
 	errs := make(chan error, len(agents))
@@ -170,15 +170,29 @@ func drive(ctx context.Context, trace runtime.Tracer, r *runtime.Router, agents 
 		}
 		return joined
 	}
-	return scancel, wait
+	return scancel, errs, wait
 }
 
-func collectOne(ctx context.Context, mb sketch.Mailbox) error {
-	_, err := runtime.NewSelector().Run(ctx, sketch.Select{Cases: []sketch.Case{
-		{Mailbox: mb, OnRecv: func(sketch.Msg) error { return nil }},
-		{After: 2 * time.Minute, OnAfter: func() error { return fmt.Errorf("timed out") }},
-	}})
-	return err
+func collectOne(ctx context.Context, mb sketch.Mailbox, agentErrs <-chan error) error {
+	recv, ok := mb.(runtime.Receiver)
+	if !ok {
+		return fmt.Errorf("mailbox is not a runtime receiver")
+	}
+	timer := time.NewTimer(2 * time.Minute)
+	defer timer.Stop()
+	select {
+	case _, ok := <-recv.C():
+		if !ok {
+			return fmt.Errorf("mailbox closed")
+		}
+		return nil
+	case err := <-agentErrs:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func truncate(s string, n int) string {

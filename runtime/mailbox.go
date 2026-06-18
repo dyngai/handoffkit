@@ -1,8 +1,10 @@
-// Package runtime is a minimal, dependency-free reference implementation of the
-// sketch interfaces: a channel-backed Mailbox, a reflect.Select-based
-// Selector, and a Router + agent run loop. It is deliberately small, enough to
-// make the sketch runnable and to demonstrate that "Mailbox = Go channel" and
-// "Select = Go select" are literal, not metaphorical.
+// Package runtime implements the sketch interfaces with Go concurrency
+// primitives: channel-backed mailboxes, reflect.Select-based waits, routed
+// dispatch, pub/sub brokers, join and quorum barriers, budgets, supervision,
+// dead letters, tracing, and corpus-backed compaction.
+//
+// It is a small reference runtime, intended to make "Mailbox = Go channel" and
+// "Select = Go select" concrete while keeping agent coordination explicit.
 package runtime
 
 import (

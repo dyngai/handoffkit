@@ -53,9 +53,8 @@ func (b *Broker) Subscribe(mb sketch.Mailbox) {
 // It operates on a snapshot of the subscribers taken at entry, so a subscriber
 // added concurrently may or may not receive this message.
 //
-// Each subscriber receives a shallow copy: the Msg struct is copied by value,
-// but its slice fields (Ctx.Thread, Ctx.Refs) are shared. Subscribers must treat
-// a received message as read-only.
+// Each subscriber receives independent message state: the Msg struct is copied
+// by value, and mutable Ctx slice fields have distinct backing storage.
 func (b *Broker) Publish(ctx context.Context, msg sketch.Msg) error {
 	b.mu.RLock()
 	subs := make([]sketch.Mailbox, len(b.subs))
@@ -64,9 +63,33 @@ func (b *Broker) Publish(ctx context.Context, msg sketch.Msg) error {
 
 	var errs []error
 	for i, mb := range subs {
-		if err := mb.Send(ctx, msg); err != nil {
+		if err := mb.Send(ctx, cloneBrokerMsg(msg)); err != nil {
 			errs = append(errs, fmt.Errorf("subscriber %d: %w", i, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func cloneBrokerMsg(msg sketch.Msg) sketch.Msg {
+	msg.Ctx.Thread = cloneBrokerThread(msg.Ctx.Thread)
+	msg.Ctx.Refs = cloneBrokerRefs(msg.Ctx.Refs)
+	return msg
+}
+
+func cloneBrokerThread(thread []sketch.Turn) []sketch.Turn {
+	if thread == nil {
+		return nil
+	}
+	cloned := make([]sketch.Turn, len(thread))
+	copy(cloned, thread)
+	return cloned
+}
+
+func cloneBrokerRefs(refs []sketch.MemoryRef) []sketch.MemoryRef {
+	if refs == nil {
+		return nil
+	}
+	cloned := make([]sketch.MemoryRef, len(refs))
+	copy(cloned, refs)
+	return cloned
 }

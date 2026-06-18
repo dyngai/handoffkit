@@ -19,7 +19,7 @@ type JoinAgent struct {
 	next    sketch.Address
 	need    int
 	combine func([]sketch.Msg) sketch.Msg
-	buf     []sketch.Msg
+	rounds  map[string][]sketch.Msg
 }
 
 // NewJoinAgent builds a barrier that emits combine(batch) to next after every
@@ -48,21 +48,29 @@ func (a *JoinAgent) Address() sketch.Address { return a.addr }
 // Inbox implements sketch.Agent.
 func (a *JoinAgent) Inbox() sketch.Mailbox { return a.inbox }
 
-// Step buffers the inbound message and, once `need` have accumulated, emits the
-// combined batch and resets. While the barrier is unmet it emits nothing and the
-// run loop re-blocks on the inbox.
+// Step buffers the inbound message for in.CorrelationID and, once `need` have
+// accumulated for that round, emits the combined batch and resets that round.
+// Messages with an empty CorrelationID share the legacy unkeyed stream;
+// overlapping rounds must use distinct non-empty correlation ids.
 func (a *JoinAgent) Step(_ context.Context, in sketch.Msg) ([]sketch.Msg, error) {
-	a.buf = append(a.buf, in)
-	if len(a.buf) < a.need {
+	if a.rounds == nil {
+		a.rounds = make(map[string][]sketch.Msg)
+	}
+
+	key := in.CorrelationID
+	batch := append(a.rounds[key], in)
+	a.rounds[key] = batch
+	if len(batch) < a.need {
 		return nil, nil
 	}
-	batch := a.buf
-	// Run combine before clearing the buffer: if a user-supplied combine panics,
+
+	// Run combine before clearing the round: if a user-supplied combine panics,
 	// the batch is not silently dropped.
 	out := a.combine(batch)
-	a.buf = nil
+	delete(a.rounds, key)
 	out.From = a.addr
 	out.To = a.next
+	out.CorrelationID = key
 	return []sketch.Msg{out}, nil
 }
 

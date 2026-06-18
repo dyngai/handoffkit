@@ -5,6 +5,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,19 @@ import (
 // shapes need. It lets one set of integration assertions run against any
 // backend (OpenAI SDK, Codex token, ...).
 type agentFactory func(addr sketch.Address, system string, next sketch.Address, inbox sketch.Mailbox) sketch.Agent
+
+func TestIntegrationBackendConfigured(t *testing.T) {
+	if os.Getenv("HANDOFFKIT_REQUIRE_INTEGRATION_BACKEND") == "" {
+		t.Skip("strict integration backend check disabled")
+	}
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		return
+	}
+	if _, err := LoadCodexClient(); err == nil {
+		return
+	}
+	t.Fatal("HANDOFFKIT_REQUIRE_INTEGRATION_BACKEND is set, but neither OPENAI_API_KEY nor usable Codex credentials are configured")
+}
 
 // collectOne waits for one message on mb, a run-loop error, or timeout.
 func collectOne(t *testing.T, ctx context.Context, mb sketch.Mailbox, errs <-chan error) string {
