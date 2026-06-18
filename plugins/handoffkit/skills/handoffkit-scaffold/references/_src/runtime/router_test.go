@@ -75,3 +75,78 @@ func TestRunRejectsNonPositiveIdle(t *testing.T) {
 		}
 	}
 }
+
+func TestRunTreatsStepContextErrorsAsCleanShutdown(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		for name, run := range map[string]func(context.Context, sketch.Agent, Dispatcher, time.Duration) error{
+			"Run": Run,
+			"RunTraced": func(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Duration) error {
+				return RunTraced(ctx, a, r, idle, nil)
+			},
+		} {
+			t.Run(name+"/"+wantErr.Error(), func(t *testing.T) {
+				a := &stepErrorAgent{addr: "a", inbox: NewMailbox(1), err: wantErr}
+				if err := a.inbox.Send(context.Background(), sketch.Msg{To: "a", Payload: "work"}); err != nil {
+					t.Fatalf("Send: %v", err)
+				}
+				if err := run(context.Background(), a, NewRouter(), time.Second); err != nil {
+					t.Fatalf("%s returned %v, want nil clean shutdown", name, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRunTreatsRouteContextErrorsAsCleanShutdown(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		for name, run := range map[string]func(context.Context, sketch.Agent, Dispatcher, time.Duration) error{
+			"Run": Run,
+			"RunTraced": func(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Duration) error {
+				return RunTraced(ctx, a, r, idle, nil)
+			},
+		} {
+			t.Run(name+"/"+wantErr.Error(), func(t *testing.T) {
+				a := &routeOnceAgent{addr: "a", inbox: NewMailbox(1), to: "b"}
+				if err := a.inbox.Send(context.Background(), sketch.Msg{To: "a", Payload: "work"}); err != nil {
+					t.Fatalf("Send: %v", err)
+				}
+				r := errorDispatcher{err: wantErr}
+				if err := run(context.Background(), a, r, time.Second); err != nil {
+					t.Fatalf("%s returned %v, want nil clean shutdown", name, err)
+				}
+			})
+		}
+	}
+}
+
+type stepErrorAgent struct {
+	addr  sketch.Address
+	inbox sketch.Mailbox
+	err   error
+}
+
+func (a *stepErrorAgent) Address() sketch.Address { return a.addr }
+func (a *stepErrorAgent) Inbox() sketch.Mailbox   { return a.inbox }
+func (a *stepErrorAgent) Step(context.Context, sketch.Msg) ([]sketch.Msg, error) {
+	return nil, a.err
+}
+
+type routeOnceAgent struct {
+	addr  sketch.Address
+	inbox sketch.Mailbox
+	to    sketch.Address
+}
+
+func (a *routeOnceAgent) Address() sketch.Address { return a.addr }
+func (a *routeOnceAgent) Inbox() sketch.Mailbox   { return a.inbox }
+func (a *routeOnceAgent) Step(_ context.Context, in sketch.Msg) ([]sketch.Msg, error) {
+	return []sketch.Msg{{To: a.to, Payload: in.Payload}}, nil
+}
+
+type errorDispatcher struct {
+	err error
+}
+
+func (d errorDispatcher) Route(context.Context, sketch.Msg) error {
+	return d.err
+}

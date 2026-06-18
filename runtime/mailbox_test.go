@@ -69,3 +69,38 @@ func TestChanMailbox_RecvNilContext(t *testing.T) {
 		t.Fatalf("Recv(nil ctx) = (%q, %v, %v)", m.Payload, ok, err)
 	}
 }
+
+func TestChanMailbox_SendCanceledContextWinsOverReadyBuffer(t *testing.T) {
+	mb := NewMailbox(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := mb.Send(ctx, sketch.Msg{Payload: "canceled"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Send with canceled context: err = %v, want context.Canceled", err)
+	}
+	if _, ok := tryRecv(mb); ok {
+		t.Fatal("Send delivered into a ready buffer despite an already-canceled context")
+	}
+	if err := mb.Send(context.Background(), sketch.Msg{Payload: "after"}); err != nil {
+		t.Fatalf("Send after canceled attempt: %v", err)
+	}
+}
+
+func TestChanMailbox_RecvCanceledContextWinsOverReadyBuffer(t *testing.T) {
+	mb := NewMailbox(1)
+	if err := mb.Send(context.Background(), sketch.Msg{Payload: "queued"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msg, ok, err := mb.Recv(ctx)
+	if !errors.Is(err, context.Canceled) || ok {
+		t.Fatalf("Recv with canceled context = (%q, %v, %v), want context.Canceled and ok=false", msg.Payload, ok, err)
+	}
+	msg, ok, err = mb.Recv(context.Background())
+	if err != nil || !ok || msg.Payload != "queued" {
+		t.Fatalf("Recv after canceled attempt = (%q, %v, %v), want queued message", msg.Payload, ok, err)
+	}
+}

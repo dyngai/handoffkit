@@ -345,6 +345,22 @@ func TestNursery_ContextReturnsFalseForCancelledContext(t *testing.T) {
 	}
 }
 
+func TestNursery_RouteDoesNotDeliverToRootCanceledDestination(t *testing.T) {
+	root, cancel := context.WithCancel(context.Background())
+	n := NewNursery(root, 1)
+	spawnAck(t, n, "", "coord", "")
+	worker := spawnAck(t, n, "coord", "w", "coord")
+	cancel()
+
+	err := n.Route(context.Background(), sketch.Msg{From: "coord", To: "w", Payload: "after cancel"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Route after root cancellation: err = %v, want context.Canceled", err)
+	}
+	if m, ok := tryRecv(worker.inbox); ok {
+		t.Fatalf("Route delivered to root-canceled destination: %#v", m)
+	}
+}
+
 type spoofAgent struct {
 	addr  sketch.Address
 	inbox sketch.Mailbox

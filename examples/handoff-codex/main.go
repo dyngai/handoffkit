@@ -4,7 +4,7 @@
 //
 // This is a LOCAL, UNSUPPORTED convenience for running the demo off a ChatGPT
 // plan (the token is short-lived, run `codex login` to refresh, and used
-// outside its intended scope). It is deliberately left untracked.
+// outside its intended scope). It is not a supported API surface.
 package main
 
 import (

@@ -72,7 +72,7 @@ func UnionStrings(existing any, ok bool, delta any) (any, error) {
 type MemCorpus struct {
 	mu    sync.RWMutex
 	merge MergeFunc
-	data  map[string]any
+	data  map[sketch.MemoryRef]any
 }
 
 // NewCorpus returns a MemCorpus using merge to reconcile writes. A nil merge
@@ -81,13 +81,7 @@ func NewCorpus(merge MergeFunc) *MemCorpus {
 	if merge == nil {
 		merge = LastWriteWins
 	}
-	return &MemCorpus{merge: merge, data: make(map[string]any)}
-}
-
-// refKey flattens a MemoryRef to a map key. The NUL separator cannot appear in a
-// normal namespace/key, so distinct refs cannot collide.
-func refKey(ref sketch.MemoryRef) string {
-	return ref.Namespace + "\x00" + ref.Key
+	return &MemCorpus{merge: merge, data: make(map[sketch.MemoryRef]any)}
 }
 
 // cloneCorpusValue copies known mutable values before they cross the Corpus
@@ -115,7 +109,7 @@ func cloneCorpusValue(v any) any {
 func (c *MemCorpus) Get(_ context.Context, ref sketch.MemoryRef) (any, bool, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	v, ok := c.data[refKey(ref)]
+	v, ok := c.data[ref]
 	if !ok {
 		return nil, false, nil
 	}
@@ -128,13 +122,12 @@ func (c *MemCorpus) Get(_ context.Context, ref sketch.MemoryRef) (any, bool, err
 func (c *MemCorpus) Merge(_ context.Context, ref sketch.MemoryRef, delta any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	k := refKey(ref)
-	existing, ok := c.data[k]
+	existing, ok := c.data[ref]
 	merged, err := c.merge(cloneCorpusValue(existing), ok, cloneCorpusValue(delta))
 	if err != nil {
 		return err
 	}
-	c.data[k] = cloneCorpusValue(merged)
+	c.data[ref] = cloneCorpusValue(merged)
 	return nil
 }
 

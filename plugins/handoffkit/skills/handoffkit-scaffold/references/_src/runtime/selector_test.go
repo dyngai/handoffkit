@@ -175,6 +175,9 @@ func TestSelector_NonReceiverMailboxErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a non-Receiver mailbox")
 	}
+	if !strings.Contains(err.Error(), "runtime.Receiver") {
+		t.Fatalf("err = %v, want runtime.Receiver requirement", err)
+	}
 	if idx != -1 {
 		t.Fatalf("chosen case = %d, want -1 on error", idx)
 	}

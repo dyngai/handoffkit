@@ -142,6 +142,9 @@ func RunTraced(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Dura
 		}
 		outs, err := a.Step(ctx, got)
 		if err != nil {
+			if isContextShutdown(err) {
+				return nil
+			}
 			return err
 		}
 		for _, o := range outs {
@@ -156,8 +159,15 @@ func RunTraced(ctx context.Context, a sketch.Agent, r Dispatcher, idle time.Dura
 				continue // terminal output; nothing to route
 			}
 			if err := r.Route(ctx, routed); err != nil {
+				if isContextShutdown(err) {
+					return nil
+				}
 				return err
 			}
 		}
 	}
+}
+
+func isContextShutdown(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

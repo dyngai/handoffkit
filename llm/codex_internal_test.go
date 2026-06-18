@@ -1,13 +1,19 @@
 package llm
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dyngai/handoffkit/runtime"
+	"github.com/dyngai/handoffkit/sketch"
 )
 
 // sseFrames builds an SSE body: one blank-line-separated "data: <event>" frame
@@ -156,5 +162,55 @@ func TestLoadCodexClientAccessTokenEnvExpired(t *testing.T) {
 	_, err := LoadCodexClient()
 	if err == nil || !strings.Contains(err.Error(), "CODEX_ACCESS_TOKEN") || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("LoadCodexClient err = %v, want useful expired env-token error", err)
+	}
+}
+
+func TestCodexCompleteNilClientReturnsError(t *testing.T) {
+	var c *CodexClient
+	_, err := c.Complete(context.Background(), "system", "user")
+	if err == nil || !strings.Contains(err.Error(), "codex client is nil") {
+		t.Fatalf("Complete err = %v, want nil-client error", err)
+	}
+}
+
+func TestCodexCompleteNilHTTPReturnsError(t *testing.T) {
+	c := &CodexClient{Model: DefaultCodexModel, Endpoint: CodexEndpoint}
+	_, err := c.Complete(context.Background(), "system", "user")
+	if err == nil || !strings.Contains(err.Error(), "HTTP is nil") {
+		t.Fatalf("Complete err = %v, want nil-HTTP error", err)
+	}
+}
+
+func TestCodexAgentWithFullOutputPayloadKeepsCompactedRoutedResult(t *testing.T) {
+	full := strings.Repeat("final answer ", 300)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseFrames(
+			fmt.Sprintf(`{"type":"response.output_text.delta","delta":%q}`, full),
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		)))
+	}))
+	defer srv.Close()
+
+	const budget = 80
+	corpus := runtime.NewCorpus(nil)
+	comp := runtime.NewCompactor(corpus, runtime.CompactPolicy{MaxSummaryBytes: budget}, nil)
+	client := &CodexClient{HTTP: srv.Client(), Model: DefaultCodexModel, Endpoint: srv.URL}
+	agent := NewCodexAgent("writer", client, "system", "out", runtime.NewMailbox(1)).
+		WithCompactor(comp).
+		WithFullOutputPayload()
+
+	out, err := agent.Step(context.Background(), sketch.Msg{From: "planner", To: "writer", Payload: "write final"})
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("Step emitted %d messages, want 1", len(out))
+	}
+	if out[0].Payload != full {
+		t.Fatalf("Payload len = %d, want full len %d", len(out[0].Payload), len(full))
+	}
+	if len(out[0].Ctx.Summary) > budget {
+		t.Fatalf("Summary is %d bytes, want <= %d", len(out[0].Ctx.Summary), budget)
 	}
 }

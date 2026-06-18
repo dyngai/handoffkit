@@ -137,6 +137,12 @@ func newCodexClient(token, account string) *CodexClient {
 
 // Complete runs one streamed Responses call and assembles the output text.
 func (c *CodexClient) Complete(ctx context.Context, instructions, userText string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("codex client is nil")
+	}
+	if c.HTTP == nil {
+		return "", fmt.Errorf("codex client HTTP is nil")
+	}
 	payload := map[string]any{
 		"model":        c.Model,
 		"instructions": instructions, // required by the backend
@@ -269,6 +275,7 @@ type CodexAgent struct {
 	system  string
 	next    sketch.Address
 	compact *runtime.Compactor // optional: bound + corpus-offload the handoff
+	fullOut bool               // keep full output in Payload even for routed compacted messages
 	seq     int                // per-step counter for unique corpus refs
 }
 
@@ -283,6 +290,15 @@ func NewCodexAgent(addr sketch.Address, client *CodexClient, system string, next
 // agent for chaining. Pass nil to keep the default full-output behavior.
 func (a *CodexAgent) WithCompactor(c *runtime.Compactor) *CodexAgent {
 	a.compact = c
+	return a
+}
+
+// WithFullOutputPayload keeps the complete model output in Msg.Payload even
+// when the agent uses a Compactor and routes to another mailbox. The handoff
+// context is still compacted; use this on a final routed agent whose mailbox
+// output is the user-facing result.
+func (a *CodexAgent) WithFullOutputPayload() *CodexAgent {
+	a.fullOut = true
 	return a
 }
 
@@ -310,7 +326,7 @@ func (a *CodexAgent) Step(ctx context.Context, in sketch.Msg) ([]sketch.Msg, err
 	if err != nil {
 		return nil, err
 	}
-	return []sketch.Msg{{From: a.addr, To: a.next, Payload: outboundPayload(a.compact, a.next, out, hc), Ctx: hc}}, nil
+	return []sketch.Msg{{From: a.addr, To: a.next, Payload: outboundPayload(a.compact, a.next, out, hc, a.fullOut), Ctx: hc}}, nil
 }
 
 var _ sketch.Agent = (*CodexAgent)(nil)

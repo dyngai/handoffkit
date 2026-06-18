@@ -27,6 +27,7 @@ type OpenAIAgent struct {
 	system  string
 	next    sketch.Address     // where to hand off the result; "" = terminal
 	compact *runtime.Compactor // optional: bound + corpus-offload the handoff
+	fullOut bool               // keep full output in Payload even for routed compacted messages
 	seq     int                // per-step counter for unique corpus refs
 }
 
@@ -41,6 +42,15 @@ func NewOpenAIAgent(addr sketch.Address, client openai.Client, model, system str
 // agent for chaining. Pass nil to keep the default full-output behavior.
 func (a *OpenAIAgent) WithCompactor(c *runtime.Compactor) *OpenAIAgent {
 	a.compact = c
+	return a
+}
+
+// WithFullOutputPayload keeps the complete model output in Msg.Payload even
+// when the agent uses a Compactor and routes to another mailbox. The handoff
+// context is still compacted; use this on a final routed agent whose mailbox
+// output is the user-facing result.
+func (a *OpenAIAgent) WithFullOutputPayload() *OpenAIAgent {
+	a.fullOut = true
 	return a
 }
 
@@ -83,7 +93,7 @@ func (a *OpenAIAgent) Step(ctx context.Context, in sketch.Msg) ([]sketch.Msg, er
 	if err != nil {
 		return nil, err
 	}
-	return []sketch.Msg{{From: a.addr, To: a.next, Payload: outboundPayload(a.compact, a.next, out, hc), Ctx: hc}}, nil
+	return []sketch.Msg{{From: a.addr, To: a.next, Payload: outboundPayload(a.compact, a.next, out, hc, a.fullOut), Ctx: hc}}, nil
 }
 
 var _ sketch.Agent = (*OpenAIAgent)(nil)

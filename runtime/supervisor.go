@@ -178,20 +178,35 @@ func (n *Nursery) Route(ctx context.Context, m sketch.Msg) error {
 	if toMailbox == nil {
 		return fmt.Errorf("handoffkit: nil mailbox registered for address %q", m.To)
 	}
+	if err := toCtx.Err(); err != nil {
+		return err
+	}
 
 	// Deliver outside the lock: Send may block on an unbuffered/full mailbox.
-	// Tie delivery to the destination's supervised context so Cancel can wake an
-	// in-flight send even when the caller passed a non-cancellable context.
-	routeCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		select {
-		case <-toCtx.Done():
-			cancel()
-		case <-routeCtx.Done():
-		}
-	}()
+	// Tie delivery to the destination's supervised context so Cancel can wake
+	// an in-flight send even when the caller passed a non-cancellable context.
+	routeCtx, cleanup := deliveryContext(ctx, toCtx)
+	defer cleanup()
+	if err := toCtx.Err(); err != nil {
+		return err
+	}
 	return toMailbox.Send(routeCtx, m)
+}
+
+func deliveryContext(ctx, toCtx context.Context) (context.Context, func()) {
+	switch {
+	case ctx.Done() == nil:
+		return toCtx, func() {}
+	case toCtx.Done() == nil:
+		return ctx, func() {}
+	default:
+		routeCtx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(toCtx, cancel)
+		return routeCtx, func() {
+			stop()
+			cancel()
+		}
+	}
 }
 
 // Context returns the supervised context for addr, derived from the Nursery root

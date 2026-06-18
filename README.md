@@ -22,6 +22,14 @@ tracing.
 - Examples: [`examples/`](./examples)
 - Design notes: [`docs/`](./docs)
 
+Integration status:
+
+| Surface | Status | Setup | Notes |
+|---|---|---|---|
+| OpenAI SDK LLM agents | Supported API path | `OPENAI_API_KEY` | Uses the official OpenAI Go SDK. |
+| Codex plugin / skills | Supported Codex extension path | `codex plugin marketplace add dyngai/handoffkit`, then install **HandoffKit** from `/plugins` | Provides the `handoffkit` and `handoffkit-scaffold` skills inside Codex. |
+| Codex transport LLM agents | Local / unsupported | `codex login` | Reverse-engineered ChatGPT-session transport used for demos and experiments; it can change or break without notice. |
+
 ## Core Idea
 
 Treat each agent as an actor: private state, an addressable mailbox, and a
@@ -55,12 +63,40 @@ Why it helps:
 | `WithDeadLetters` | Capture undeliverable messages. |
 | `RunTraced` / `Tracer` | Message-level observability. |
 
-The closest neighbors are generic actor libraries such as
-[`go-actor`](https://github.com/vladopajic/go-actor), BEAM-style agent runtimes
-such as [`mabeam`](https://github.com/nshkrdotcom/mabeam), and LLM frameworks
-such as [`llmgo`](https://github.com/hungpdn/llmgo). HandoffKit's niche is the
-combination: actor-style ownership, `select` composition, bounded handoff
-context, topology guards, and traceable LLM-agent runs.
+## How It Compares
+
+Ranked by overall similarity (language, the actor/message-passing model, and the
+LLM-agent domain together), the closest repos are:
+
+1. [`go-actor`](https://github.com/vladopajic/go-actor) (Go), the mechanism twin: a generic Actor + CSP library (`Mailbox`, `Worker.DoWork` + `select`), essentially HandoffKit's `runtime/` with the LLM layer removed.
+2. [`mabeam`](https://github.com/nshkrdotcom/mabeam) (Elixir/BEAM), the architecture twin: per-process actors, point-to-point signals, an event bus (≈ `Broker`), and OTP supervision trees (≈ `Nursery`), on the runtime where "actor model, not pure CSP" is native.
+3. [`llmgo`](https://github.com/hungpdn/llmgo) (Go), the peer product: the same language and niche, but built on a shared-memory blackboard with a central router.
+
+| Capability | **HandoffKit** | go-actor | mabeam | llmgo |
+|---|---|---|---|---|
+| Language | Go | Go | Elixir/BEAM | Go |
+| Actor / mailbox model | ✅ `ChanMailbox` | ✅ `Mailbox` | ✅ BEAM process mailbox | ✅ inbox/outbox chans |
+| `select`-composition (peer/user/budget/timeout in one wait) | ✅ `Selector` (`reflect.Select`) | ⚠️ raw `select` in `DoWork` | ⚠️ native `receive`/`after` | ⚠️ engine↔agent RPC (reply/err/timeout) |
+| Ownership-transfer handoff (sender lets go) | ✅ `Handoff` + refs | ❌ | ❌ signals/events | ❌ router picks next |
+| Point-to-point routing | ✅ `Router` | ⚠️ DIY | ✅ `Registry` + send-to-pid | ✅ `LLMRouter`/`ChainRouter` |
+| Pub/sub broadcast | ✅ `Broker` | ❌ | ✅ `EventBus` | ❌ |
+| Fan-in join / quorum | ✅ `JoinAgent` / `QuorumAgent` | ❌ | ❌ | ❌ |
+| Budget ceiling as selectable value | ✅ `Budget.Done()` (token/$/calls/wall) | ❌ | ❌ | ❌ |
+| Shared knowledge store | ✅ `MemCorpus` (CRDT `Merge`) | ❌ | ❌ private state | ⚠️ shared memory + Redis |
+| Bounded/lossy handoff compaction | ✅ `Compactor` (measured) | ❌ | ❌ | ❌ |
+| Structured concurrency / topology guard | ✅ `Nursery` (depth/lineage, subtree `Cancel`) | ⚠️ `Combine` start/stop | ✅ OTP supervision trees | ⚠️ context cancel only |
+| Dead-letter capture | ✅ `WithDeadLetters` | ❌ | ⚠️ monitors / `:DOWN` | ❌ |
+| Message-level trace | ✅ `Tracer` (`TraceRecv`/`TraceSend`) | ❌ | ⚠️ `:telemetry` | ⚠️ `StepHandler` callback |
+| Tool calling / RAG / streaming | ❌ out of scope | ❌ | ❌ | ✅ all three |
+| LLM backends | OpenAI SDK + local/unsupported Codex transport | none | none | Ollama (cloud soon) |
+| Posture | design exploration + tested reference impl | minimal actor lib | BEAM multi-agent framework (early) | production-aimed framework |
+
+✅ first-class · ⚠️ partial/adjacent · ❌ absent
+
+No neighbor combines `Select`-composition, ownership-transfer `Handoff`, a
+selectable `Budget`, a CRDT `Corpus`, `Compactor`, fan-in `Join`/`Quorum`, a
+topology-guarded `Nursery`, and message-level `Tracer`. That combination is the
+point; the individual pieces are deliberately unoriginal.
 
 ## Install as a Codex Plugin
 
@@ -89,8 +125,10 @@ codex
 codex plugin marketplace add /path/to/handoffkit
 ```
 
-Then open `/plugins`, choose `dyngai/handoffkit` or the local marketplace entry
-you registered, open **HandoffKit**, and select **Install plugin**.
+Then open `/plugins`. For the GitHub marketplace source, choose the HandoffKit
+entry shown as `handoffkit@handoffkit` or **HandoffKit** depending on your Codex
+UI version. For local development, choose the local marketplace entry you
+registered. Open **HandoffKit** and select **Install plugin**.
 
 Use it with the `@` picker:
 
@@ -151,8 +189,31 @@ Checks reported by agents:
 - make test
 ```
 
-Those findings were then fixed in parallel worktrees and verified with unit and
-integration tests.
+Those findings were then fixed in parallel, one git worktree per scope, merged
+back into a clean `main`:
+
+```text
+› @handoffkit fix all the issues in parallel using worktrees
+```
+
+Codex created one branch and worktree per disjoint scope off a clean `main`, then
+handed each worker a bounded patch scope in its own tree, so parallel writes
+could not collide:
+
+```text
+git worktree add -b fix/runtime-topology /tmp/handoffkit-runtime main
+git worktree add -b fix/llm-examples     /tmp/handoffkit-llm     main
+git worktree add -b fix/plugin-docs      /tmp/handoffkit-docs    main
+
+Maxwell    fix/runtime-topology   runtime topology fixes
+Arendt     fix/llm-examples       LLM and examples fixes
+Aristotle  fix/plugin-docs        plugin and docs fixes
+```
+
+Because the scopes shared no files, the branches merged back without conflicts.
+The main tree stayed clean as the neutral merge and verification point: `make
+vet` and the test suite ran there after merge, then the temporary worktrees and
+branches were removed.
 
 ## Run It
 
@@ -176,7 +237,8 @@ not require `package.json`, `tsconfig.json`, or a local `tsx` install. Use a
 Node release with type stripping enabled by default; this is tested with Node.js
 24.
 
-Codex-backed examples use the Codex CLI session rather than `OPENAI_API_KEY`:
+Local, unsupported Codex-backed examples use the Codex CLI session rather than
+`OPENAI_API_KEY`:
 
 ```sh
 go run ./examples/handoff-codex
@@ -194,7 +256,7 @@ make test-integration     # go test -tags=integration ./llm/...
 Integration tests call live LLM backends:
 
 - OpenAI SDK path needs `OPENAI_API_KEY`.
-- Codex path needs a fresh `codex login`.
+- Codex path is local and unsupported; it needs a fresh `codex login`.
 - Missing credentials skip the corresponding integration tests.
 
 Use verbose integration output to see message traces:
@@ -209,8 +271,9 @@ Proven by the tested code:
 
 - The runtime primitives compile and pass under `-race`.
 - `Select` composition works for messages, deadlines, and cancellation.
-- Real OpenAI and Codex-backed agents can coordinate by routed messages.
-- The same `Agent` abstraction works across the OpenAI SDK and Codex transport.
+- Real OpenAI and local Codex-backed agents can coordinate by routed messages.
+- The same `Agent` abstraction works across the supported OpenAI SDK path and
+  the unsupported Codex transport.
 
 Not proven:
 

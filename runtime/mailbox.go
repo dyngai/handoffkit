@@ -41,6 +41,9 @@ func (m *ChanMailbox) Send(ctx context.Context, msg sketch.Msg) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Only the channel send can panic here (send on closed); the nil-ctx guard
 	// above keeps a nil context from panicking and being mislabeled ErrClosed.
 	defer func() {
@@ -60,6 +63,9 @@ func (m *ChanMailbox) Send(ctx context.Context, msg sketch.Msg) (err error) {
 func (m *ChanMailbox) Recv(ctx context.Context) (sketch.Msg, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return sketch.Msg{}, false, err
 	}
 	select {
 	case msg, ok := <-m.ch:

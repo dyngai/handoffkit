@@ -38,27 +38,15 @@ func buildPrompt(in sketch.Msg) string {
 		}
 		b.WriteString("\n")
 	}
-	if in.Payload != "" && !payloadDuplicatesBoundedContext(in.Payload, in.Ctx) {
+	if in.Payload != "" && !payloadDuplicatesContextSummary(in.Payload, in.Ctx) {
 		b.WriteString("Task:\n")
 		b.WriteString(in.Payload)
 	}
 	return b.String()
 }
 
-func payloadDuplicatesBoundedContext(payload string, hc sketch.HandoffContext) bool {
-	payload = strings.TrimSpace(payload)
-	if payload == "" {
-		return true
-	}
-	if payload == strings.TrimSpace(hc.Summary) {
-		return true
-	}
-	for _, turn := range hc.Thread {
-		if payload == strings.TrimSpace(turn.Content) {
-			return true
-		}
-	}
-	return false
+func payloadDuplicatesContextSummary(payload string, hc sketch.HandoffContext) bool {
+	return payload != "" && payload == hc.Summary
 }
 
 var handoffRefSeq atomic.Uint64
@@ -84,7 +72,11 @@ func handoffRef(addr sketch.Address, seq int) sketch.MemoryRef {
 // chain. See examples/compaction for the measured difference.
 func buildHandoff(ctx context.Context, compact *runtime.Compactor, addr sketch.Address, seq int, prior sketch.HandoffContext, out string) (sketch.HandoffContext, error) {
 	if compact == nil {
-		return sketch.HandoffContext{Summary: out}, nil
+		return sketch.HandoffContext{
+			Summary: out,
+			Thread:  append([]sketch.Turn{}, prior.Thread...),
+			Refs:    append([]sketch.MemoryRef{}, prior.Refs...),
+		}, nil
 	}
 	ref := handoffRef(addr, seq)
 	hc, err := compact.Compact(ctx, ref, runtime.WorkingState{Output: out, Thread: prior.Thread})
@@ -97,11 +89,12 @@ func buildHandoff(ctx context.Context, compact *runtime.Compactor, addr sketch.A
 	return hc, nil
 }
 
-// outboundPayload returns what travels in Msg.Payload. Compacted routed handoffs
-// carry only bounded prose; terminal messages keep the complete output for the
-// caller that directly consumes the Step result.
-func outboundPayload(compact *runtime.Compactor, next sketch.Address, full string, hc sketch.HandoffContext) string {
-	if compact != nil && next != "" {
+// outboundPayload returns what travels in Msg.Payload. Compacted routed
+// handoffs carry only bounded prose by default; terminal messages and
+// fullPayload routes keep the complete output for callers that directly consume
+// the message as the user-facing result.
+func outboundPayload(compact *runtime.Compactor, next sketch.Address, full string, hc sketch.HandoffContext, fullPayload bool) string {
+	if compact != nil && next != "" && !fullPayload {
 		return hc.Summary
 	}
 	return full

@@ -9,7 +9,7 @@
 // HTTP API. The shared queue mailbox gives load-balanced, exactly-once dispatch
 // for free (Go delivers each task to exactly one worker).
 //
-// LOCAL, UNSUPPORTED, and untracked: it drives the Codex CLI agent on your
+// LOCAL, UNSUPPORTED demo behavior: it drives the Codex CLI agent on your
 // ChatGPT plan (run `codex login` if the token is stale). Keep N small, a
 // `prolite` plan throttles parallel sessions. Requires `codex` and `go` on PATH.
 //

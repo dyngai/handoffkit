@@ -2,7 +2,7 @@
 // against the Codex backend with a tracer on, so you can SEE every message each
 // agent saw and communicated across all features in one run.
 //
-// LOCAL, UNSUPPORTED, untracked (uses the Codex CLI's ChatGPT token; run
+// LOCAL, UNSUPPORTED demo behavior (uses the Codex CLI's ChatGPT token; run
 // `codex login` if it is stale). Needs the Go 1.22+ toolchain on PATH:
 //
 //	PATH=/opt/homebrew/bin:$PATH go run ./examples/trace-all

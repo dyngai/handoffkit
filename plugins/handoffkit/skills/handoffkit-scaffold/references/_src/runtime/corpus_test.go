@@ -31,6 +31,34 @@ func TestCorpus_RefResolvesAndMissingIsAbsent(t *testing.T) {
 	}
 }
 
+func TestCorpus_MemoryRefKeyFieldsCannotCollide(t *testing.T) {
+	c := NewCorpus(nil)
+	a := sketch.MemoryRef{Namespace: "docs", Key: "report\x00draft"}
+	b := sketch.MemoryRef{Namespace: "docs\x00report", Key: "draft"}
+
+	if err := c.Merge(context.Background(), a, "value-a"); err != nil {
+		t.Fatalf("Merge(a): %v", err)
+	}
+	if err := c.Merge(context.Background(), b, "value-b"); err != nil {
+		t.Fatalf("Merge(b): %v", err)
+	}
+
+	av, ok, err := c.Get(context.Background(), a)
+	if err != nil || !ok {
+		t.Fatalf("Get(a): ok=%v err=%v", ok, err)
+	}
+	bv, ok, err := c.Get(context.Background(), b)
+	if err != nil || !ok {
+		t.Fatalf("Get(b): ok=%v err=%v", ok, err)
+	}
+	if av != "value-a" {
+		t.Fatalf("Get(a) = %q, want value-a", av)
+	}
+	if bv != "value-b" {
+		t.Fatalf("Get(b) = %q, want value-b", bv)
+	}
+}
+
 // The conflict-free claim: with a commutative MergeFunc the final value does not
 // depend on the order writes arrived in. Two corpora fed the same set of writes
 // in different orders converge to the same union.

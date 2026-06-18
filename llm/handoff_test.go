@@ -9,19 +9,33 @@ import (
 	"github.com/dyngai/handoffkit/sketch"
 )
 
-// With no Compactor the handoff carries the full output as Summary and no refs:
-// the lossy-but-heavy default behavior is preserved.
-func TestBuildHandoff_NoCompactorShipsFullOutput(t *testing.T) {
+// With no Compactor the handoff carries the full output as Summary and preserves
+// inbound thread/refs: the lossy-but-heavy default behavior keeps the handoff
+// trail intact while making the new output the current summary.
+func TestBuildHandoff_NoCompactorShipsFullOutputAndPriorTrail(t *testing.T) {
 	out := strings.Repeat("Z", 3000)
-	hc, err := buildHandoff(context.Background(), nil, "agent", 1, sketch.HandoffContext{}, out)
+	prior := sketch.HandoffContext{
+		Summary: "prior summary",
+		Thread:  []sketch.Turn{{Role: "user", Content: "original task"}},
+		Refs:    []sketch.MemoryRef{{Namespace: "handoff", Key: "upstream-1"}},
+	}
+	hc, err := buildHandoff(context.Background(), nil, "agent", 1, prior, out)
 	if err != nil {
 		t.Fatalf("buildHandoff: %v", err)
 	}
 	if hc.Summary != out {
 		t.Fatalf("Summary len = %d, want full output len %d", len(hc.Summary), len(out))
 	}
-	if len(hc.Refs) != 0 {
-		t.Fatalf("Refs = %v, want none without a compactor", hc.Refs)
+	if len(hc.Thread) != 1 || hc.Thread[0] != prior.Thread[0] {
+		t.Fatalf("Thread = %v, want preserved prior thread %v", hc.Thread, prior.Thread)
+	}
+	if len(hc.Refs) != 1 || hc.Refs[0] != prior.Refs[0] {
+		t.Fatalf("Refs = %v, want preserved prior refs %v", hc.Refs, prior.Refs)
+	}
+	hc.Thread[0] = sketch.Turn{Role: "assistant", Content: "mutated"}
+	hc.Refs[0] = sketch.MemoryRef{Namespace: "x", Key: "y"}
+	if prior.Thread[0].Content != "original task" || prior.Refs[0].Key != "upstream-1" {
+		t.Fatal("buildHandoff aliased prior thread/refs without a compactor")
 	}
 }
 
@@ -197,6 +211,20 @@ func TestBuildPromptIncludesDistinctPayloadWithTruncatedSummaryPrefix(t *testing
 	}
 }
 
+func TestBuildPromptIncludesPayloadThatRepeatsPriorThreadTurn(t *testing.T) {
+	const repeatedTask = "run the same task again"
+	prompt := buildPrompt(sketch.Msg{
+		From:    "planner",
+		Payload: repeatedTask,
+		Ctx: sketch.HandoffContext{
+			Thread: []sketch.Turn{{Role: "user", Content: repeatedTask}},
+		},
+	})
+	if !strings.Contains(prompt, "Task:\n"+repeatedTask) {
+		t.Fatalf("prompt dropped a legitimate repeated task:\n%s", prompt)
+	}
+}
+
 func TestOutboundPayload_CompactedRoutedHandoffIsBounded(t *testing.T) {
 	const budget = 80
 	full := strings.Repeat("Z", 3000)
@@ -207,15 +235,34 @@ func TestOutboundPayload_CompactedRoutedHandoffIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandoff: %v", err)
 	}
-	routed := outboundPayload(comp, "next", full, hc)
+	routed := outboundPayload(comp, "next", full, hc, false)
 	if len(routed) > budget {
 		t.Fatalf("routed payload len = %d, want <= %d", len(routed), budget)
 	}
 	if routed == full {
 		t.Fatal("compacted routed handoff still carried the full output in Payload")
 	}
-	terminal := outboundPayload(comp, "", full, hc)
+	terminal := outboundPayload(comp, "", full, hc, false)
 	if terminal != full {
 		t.Fatal("terminal output should preserve the full model output")
+	}
+}
+
+func TestOutboundPayload_CompactedRoutedFinalCanKeepFullPayload(t *testing.T) {
+	const budget = 80
+	full := strings.Repeat("final answer ", 300)
+	corpus := runtime.NewCorpus(nil)
+	comp := runtime.NewCompactor(corpus, runtime.CompactPolicy{MaxSummaryBytes: budget}, nil)
+
+	hc, err := buildHandoff(context.Background(), comp, "writer", 1, sketch.HandoffContext{}, full)
+	if err != nil {
+		t.Fatalf("buildHandoff: %v", err)
+	}
+	if len(hc.Summary) > budget {
+		t.Fatalf("Summary is %d bytes, want <= %d", len(hc.Summary), budget)
+	}
+	payload := outboundPayload(comp, "out", full, hc, true)
+	if payload != full {
+		t.Fatalf("full-output routed payload was truncated to len %d, want full len %d", len(payload), len(full))
 	}
 }

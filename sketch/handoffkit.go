@@ -86,7 +86,9 @@ type Agent interface {
 // Case is one arm of a Select: a source to wait on and what to do when it fires.
 type Case struct {
 	// Mailbox is the source for this case. Exactly one of Mailbox / Done /
-	// After should be set per Case.
+	// After should be set per Case. Concrete Selector implementations may
+	// require extra mailbox capabilities to wait efficiently; runtime.NewSelector
+	// requires a mailbox that also implements runtime.Receiver.
 	Mailbox Mailbox
 	OnRecv  func(Msg) error
 

@@ -13,11 +13,13 @@ type stdSelector struct{}
 
 // NewSelector returns a Selector that composes waits with reflect.Select, the
 // agent analogue of Go's `select`. ctx cancellation is added as an implicit
-// final case. A context with a nil Done() (e.g. context.Background()) provides
-// no cancellation, so to guarantee a Select cannot block forever, pass a
-// cancellable context OR include an After/Done case. runtime.Run rejects
-// non-positive idle durations and supplies an idle After, so its loop is safe.
-// See tradeoffs.md §4.
+// final case. Mailbox cases must use a sketch.Mailbox that also implements
+// runtime.Receiver, such as ChanMailbox; this lets the selector wait on the
+// mailbox's underlying receive channel without polling Recv. A context with a
+// nil Done() (e.g. context.Background()) provides no cancellation, so to
+// guarantee a Select cannot block forever, pass a cancellable context OR include
+// an After/Done case. runtime.Run rejects non-positive idle durations and
+// supplies an idle After, so its loop is safe. See tradeoffs.md §4.
 func NewSelector() sketch.Selector { return stdSelector{} }
 
 func (stdSelector) Run(ctx context.Context, sel sketch.Select) (int, error) {
