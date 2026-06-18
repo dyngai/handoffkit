@@ -112,6 +112,46 @@ func TestDeadLetters_SinkFailureSurfaced(t *testing.T) {
 	}
 }
 
+// Context shutdown from the inner dispatcher is not a route failure to capture:
+// callers such as Run need to see it and treat it as clean shutdown.
+func TestDeadLetters_ContextShutdownErrorsArePreserved(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			dlq := NewDeadLetters(1)
+			disp := WithDeadLetters(errorDispatcher{err: wantErr}, dlq)
+
+			err := disp.Route(context.Background(), sketch.Msg{To: "worker", Payload: "stop"})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Route err = %v, want %v", err, wantErr)
+			}
+			select {
+			case dl := <-dlq.C():
+				t.Fatalf("shutdown error was dead-lettered: %+v", dl)
+			default:
+			}
+		})
+	}
+}
+
+func TestChanDeadLetters_DeadCanceledContextWinsOverReadyBuffer(t *testing.T) {
+	dlq := NewDeadLetters(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := dlq.Dead(ctx, DeadLetter{Msg: sketch.Msg{Payload: "canceled"}, Reason: "test"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Dead with canceled context: err = %v, want context.Canceled", err)
+	}
+	select {
+	case dl := <-dlq.C():
+		t.Fatalf("Dead enqueued into a ready buffer despite an already-canceled context: %+v", dl)
+	default:
+	}
+	if err := dlq.Dead(context.Background(), DeadLetter{Msg: sketch.Msg{Payload: "after"}, Reason: "test"}); err != nil {
+		t.Fatalf("Dead after canceled attempt: %v", err)
+	}
+}
+
 // End to end: an agent whose output targets a dead address keeps running (the
 // message is dead-lettered, not fatal) and goes on to deliver its next output.
 func TestDeadLetters_AgentSurvivesUndeliverableOutput(t *testing.T) {

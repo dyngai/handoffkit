@@ -102,3 +102,33 @@ func TestBudget_ConcurrentSpendClosesOnce(t *testing.T) {
 		t.Fatalf("budget not exhausted after full spend: exhausted=%v remaining=%d", b.Exhausted(), b.Remaining())
 	}
 }
+
+func TestBudget_RemainingZeroMeansDoneClosed(t *testing.T) {
+	const attempts = 1000
+	for i := 0; i < attempts; i++ {
+		b := NewBudget(1)
+		spent := make(chan struct{})
+		go func() {
+			b.Spend(1)
+			close(spent)
+		}()
+
+		timeout := time.After(100 * time.Millisecond)
+		for {
+			if b.Remaining() == 0 {
+				select {
+				case <-b.Done():
+				default:
+					t.Fatal("Remaining reported zero before Done was closed")
+				}
+				<-spent
+				break
+			}
+			select {
+			case <-timeout:
+				t.Fatal("timed out waiting for budget exhaustion")
+			default:
+			}
+		}
+	}
+}

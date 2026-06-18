@@ -277,12 +277,15 @@ type CodexAgent struct {
 	compact *runtime.Compactor // optional: bound + corpus-offload the handoff
 	fullOut bool               // keep full output in Payload even for routed compacted messages
 	seq     int                // per-step counter for unique corpus refs
+
+	promptCorpus   sketch.Corpus // optional: resolve inbound Ctx.Refs into prompt text
+	promptRefBytes int           // total resolved corpus bytes allowed in one prompt
 }
 
 // NewCodexAgent builds a Codex-backed actor. next is the handoff target
 // ("" means the agent produces a terminal, un-routed message).
 func NewCodexAgent(addr sketch.Address, client *CodexClient, system string, next sketch.Address, inbox sketch.Mailbox) *CodexAgent {
-	return &CodexAgent{addr: addr, inbox: inbox, client: client, system: system, next: next}
+	return &CodexAgent{addr: addr, inbox: inbox, client: client, system: system, next: next, promptRefBytes: defaultPromptRefBytes}
 }
 
 // WithCompactor makes the agent project its output onto a bounded, corpus-backed
@@ -290,6 +293,19 @@ func NewCodexAgent(addr sketch.Address, client *CodexClient, system string, next
 // agent for chaining. Pass nil to keep the default full-output behavior.
 func (a *CodexAgent) WithCompactor(c *runtime.Compactor) *CodexAgent {
 	a.compact = c
+	if c == nil {
+		a.promptCorpus = nil
+	} else {
+		a.promptCorpus = c.Corpus()
+	}
+	return a
+}
+
+// WithPromptRefBytes sets the total byte budget for corpus ref content included
+// in this agent's model prompt. It applies when WithCompactor supplies a corpus;
+// pass 0 or less to disable inbound ref resolution.
+func (a *CodexAgent) WithPromptRefBytes(max int) *CodexAgent {
+	a.promptRefBytes = max
 	return a
 }
 
@@ -310,7 +326,10 @@ func (a *CodexAgent) Inbox() sketch.Mailbox { return a.inbox }
 
 // Step runs one Codex-backed LLM call and hands the result forward.
 func (a *CodexAgent) Step(ctx context.Context, in sketch.Msg) ([]sketch.Msg, error) {
-	text := buildPrompt(in)
+	text, err := buildPromptWithCorpus(ctx, in, a.promptCorpus, a.promptRefBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	out, err := a.client.Complete(ctx, a.system, text)
 	if err != nil {

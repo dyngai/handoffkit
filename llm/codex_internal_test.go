@@ -3,9 +3,10 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,12 @@ import (
 	"github.com/dyngai/handoffkit/runtime"
 	"github.com/dyngai/handoffkit/sketch"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 
 // sseFrames builds an SSE body: one blank-line-separated "data: <event>" frame
 // per argument.
@@ -183,19 +190,25 @@ func TestCodexCompleteNilHTTPReturnsError(t *testing.T) {
 
 func TestCodexAgentWithFullOutputPayloadKeepsCompactedRoutedResult(t *testing.T) {
 	full := strings.Repeat("final answer ", 300)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(sseFrames(
-			fmt.Sprintf(`{"type":"response.output_text.delta","delta":%q}`, full),
-			`{"type":"response.completed","response":{"status":"completed"}}`,
-		)))
-	}))
-	defer srv.Close()
 
 	const budget = 80
 	corpus := runtime.NewCorpus(nil)
 	comp := runtime.NewCompactor(corpus, runtime.CompactPolicy{MaxSummaryBytes: budget}, nil)
-	client := &CodexClient{HTTP: srv.Client(), Model: DefaultCodexModel, Endpoint: srv.URL}
+	client := &CodexClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(sseFrames(
+					fmt.Sprintf(`{"type":"response.output_text.delta","delta":%q}`, full),
+					`{"type":"response.completed","response":{"status":"completed"}}`,
+				))),
+				Header:  make(http.Header),
+				Request: r,
+			}, nil
+		})},
+		Model:    DefaultCodexModel,
+		Endpoint: "https://codex.test/responses",
+	}
 	agent := NewCodexAgent("writer", client, "system", "out", runtime.NewMailbox(1)).
 		WithCompactor(comp).
 		WithFullOutputPayload()
@@ -212,5 +225,65 @@ func TestCodexAgentWithFullOutputPayloadKeepsCompactedRoutedResult(t *testing.T)
 	}
 	if len(out[0].Ctx.Summary) > budget {
 		t.Fatalf("Summary is %d bytes, want <= %d", len(out[0].Ctx.Summary), budget)
+	}
+}
+
+func TestCodexAgentWithCompactorIncludesCorpusRefsInPrompt(t *testing.T) {
+	const hidden = "hidden corpus detail: CODEX_TOKEN"
+	var capturedPrompt string
+	client := &CodexClient{
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var body struct {
+				Input []struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"input"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if len(body.Input) != 1 || len(body.Input[0].Content) != 1 {
+				t.Fatalf("unexpected request input shape: %+v", body.Input)
+			}
+			capturedPrompt = body.Input[0].Content[0].Text
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(sseFrames(
+					`{"type":"response.output_text.delta","delta":"ok"}`,
+					`{"type":"response.completed","response":{"status":"completed"}}`,
+				))),
+				Header:  make(http.Header),
+				Request: r,
+			}, nil
+		})},
+		Model:    DefaultCodexModel,
+		Endpoint: "https://codex.test/responses",
+	}
+
+	corpus := runtime.NewCorpus(nil)
+	comp := runtime.NewCompactor(corpus, runtime.CompactPolicy{MaxSummaryBytes: 32}, nil)
+	ref := sketch.MemoryRef{Namespace: "handoff", Key: "planner-1"}
+	if err := corpus.Merge(context.Background(), ref, hidden); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	agent := NewCodexAgent("writer", client, "system", "", runtime.NewMailbox(1)).
+		WithCompactor(comp)
+
+	_, err := agent.Step(context.Background(), sketch.Msg{
+		From:    "planner",
+		To:      "writer",
+		Payload: "write final",
+		Ctx: sketch.HandoffContext{
+			Summary: "bounded summary",
+			Refs:    []sketch.MemoryRef{ref},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if !strings.Contains(capturedPrompt, hidden) {
+		t.Fatalf("prompt did not include referenced corpus content:\n%s", capturedPrompt)
 	}
 }

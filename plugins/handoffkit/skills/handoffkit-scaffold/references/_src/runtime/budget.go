@@ -54,12 +54,10 @@ func (b *Budget) Spend(n int) (remaining int) {
 	if remaining < 0 {
 		remaining = 0
 	}
-	exhausted := b.spent >= b.total
-	b.mu.Unlock()
-
-	if exhausted {
+	if b.spent >= b.total {
 		b.closeOnce.Do(func() { close(b.done) })
 	}
+	b.mu.Unlock()
 	return remaining
 }
 

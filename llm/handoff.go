@@ -2,18 +2,27 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/dyngai/handoffkit/runtime"
 	"github.com/dyngai/handoffkit/sketch"
 )
 
+const defaultPromptRefBytes = 8 * 1024
+
 // buildPrompt turns the owned message state into the user-facing text sent to
 // an LLM. HandoffContext.Thread is included verbatim because callers use it for
 // recent turns that should survive a handoff.
 func buildPrompt(in sketch.Msg) string {
+	prompt, _ := buildPromptWithCorpus(context.Background(), in, nil, 0)
+	return prompt
+}
+
+func buildPromptWithCorpus(ctx context.Context, in sketch.Msg, corpus sketch.Corpus, maxRefBytes int) (string, error) {
 	var b strings.Builder
 	if in.Ctx.Summary != "" {
 		b.WriteString("Context handed from ")
@@ -38,15 +47,107 @@ func buildPrompt(in sketch.Msg) string {
 		}
 		b.WriteString("\n")
 	}
+	refs, err := resolvedCorpusRefs(ctx, in.From, in.Ctx.Refs, corpus, maxRefBytes)
+	if err != nil {
+		return "", err
+	}
+	if refs != "" {
+		b.WriteString(refs)
+	}
 	if in.Payload != "" && !payloadDuplicatesContextSummary(in.Payload, in.Ctx) {
 		b.WriteString("Task:\n")
 		b.WriteString(in.Payload)
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 func payloadDuplicatesContextSummary(payload string, hc sketch.HandoffContext) bool {
 	return payload != "" && payload == hc.Summary
+}
+
+func resolvedCorpusRefs(ctx context.Context, from sketch.Address, refs []sketch.MemoryRef, corpus sketch.Corpus, maxBytes int) (string, error) {
+	if corpus == nil || maxBytes <= 0 || len(refs) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	remaining := maxBytes
+	started := false
+	write := func(s string) bool {
+		if remaining <= 0 || s == "" {
+			return remaining > 0
+		}
+		if len(s) > remaining {
+			b.WriteString(truncPromptRunes(s, remaining))
+			remaining = 0
+			return false
+		}
+		b.WriteString(s)
+		remaining -= len(s)
+		return true
+	}
+	start := func() bool {
+		if started {
+			return true
+		}
+		started = true
+		return write("Referenced corpus content handed from " + string(from) + ":\n")
+	}
+	for _, ref := range refs {
+		v, ok, err := corpus.Get(ctx, ref)
+		if err != nil {
+			return "", fmt.Errorf("resolve corpus ref %s/%s: %w", ref.Namespace, ref.Key, err)
+		}
+		if !ok {
+			continue
+		}
+		if !start() {
+			break
+		}
+		if !write("[" + ref.Namespace + "/" + ref.Key + "]\n") {
+			break
+		}
+		if !write(corpusValueText(v)) {
+			break
+		}
+		if !write("\n") {
+			break
+		}
+	}
+	if !started {
+		return "", nil
+	}
+	if remaining > 0 {
+		b.WriteString("\n")
+	}
+	return b.String(), nil
+}
+
+func corpusValueText(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	default:
+		b, err := json.MarshalIndent(t, "", "  ")
+		if err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(t)
+	}
+}
+
+func truncPromptRunes(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		if maxBytes <= 0 {
+			return ""
+		}
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
 
 var handoffRefSeq atomic.Uint64

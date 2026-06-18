@@ -48,6 +48,9 @@ func (d *ChanDeadLetters) Dead(ctx context.Context, dl DeadLetter) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	defer func() {
 		if recover() != nil {
 			err = ErrClosed
@@ -94,6 +97,9 @@ func (d *deadLetterDispatcher) Route(ctx context.Context, m sketch.Msg) error {
 	err := d.inner.Route(ctx, m)
 	if err == nil {
 		return nil
+	}
+	if isContextShutdown(err) {
+		return err
 	}
 	if d.sink == nil {
 		return err

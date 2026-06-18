@@ -106,7 +106,13 @@ func cloneCorpusValue(v any) any {
 }
 
 // Get returns the value stored at ref. ok is false if the ref was never written.
-func (c *MemCorpus) Get(_ context.Context, ref sketch.MemoryRef) (any, bool, error) {
+func (c *MemCorpus) Get(ctx context.Context, ref sketch.MemoryRef) (any, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	v, ok := c.data[ref]
@@ -119,7 +125,13 @@ func (c *MemCorpus) Get(_ context.Context, ref sketch.MemoryRef) (any, bool, err
 // Merge reconciles delta into ref via the corpus MergeFunc. Concurrent Merges
 // are serialized under the lock; the conflict-free property comes from the
 // MergeFunc being commutative, not from the lock (the lock only guards the map).
-func (c *MemCorpus) Merge(_ context.Context, ref sketch.MemoryRef, delta any) error {
+func (c *MemCorpus) Merge(ctx context.Context, ref sketch.MemoryRef, delta any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	existing, ok := c.data[ref]

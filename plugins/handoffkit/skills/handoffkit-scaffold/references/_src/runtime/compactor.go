@@ -50,6 +50,16 @@ func NewCompactor(corpus sketch.Corpus, policy CompactPolicy, summarize func(str
 	return &Compactor{corpus: corpus, policy: policy, summarize: summarize}
 }
 
+// Corpus returns the backing corpus this Compactor writes refs into. LLM
+// receivers use it to resolve refs they were handed without requiring callers to
+// pass the same corpus twice.
+func (c *Compactor) Corpus() sketch.Corpus {
+	if c == nil {
+		return nil
+	}
+	return c.corpus
+}
+
 // Compact writes ws.Output to the corpus at ref and returns a bounded handoff
 // that references it. The returned Summary is guaranteed to be at most
 // policy.MaxSummaryBytes bytes; Refs always includes ref so the receiver can

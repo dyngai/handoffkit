@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dyngai/handoffkit/sketch"
 )
@@ -28,6 +29,55 @@ func TestCorpus_RefResolvesAndMissingIsAbsent(t *testing.T) {
 	}
 	if v.(string) != "full text" {
 		t.Fatalf("Get = %q, want %q", v, "full text")
+	}
+}
+
+func TestCorpus_GetReturnsContextError(t *testing.T) {
+	c := NewCorpus(nil)
+	ref := sketch.MemoryRef{Namespace: "docs", Key: "report"}
+	if err := c.Merge(context.Background(), ref, "full text"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if v, ok, err := c.Get(ctx, ref); !errors.Is(err, context.Canceled) || ok || v != nil {
+		t.Fatalf("Get with canceled context = (%v, %v, %v), want nil/false/context.Canceled", v, ok, err)
+	}
+
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	if _, _, err := c.Get(expired, ref); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Get with expired context err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestCorpus_MergeReturnsContextErrorAndDoesNotMutate(t *testing.T) {
+	c := NewCorpus(nil)
+	ref := sketch.MemoryRef{Namespace: "docs", Key: "report"}
+	missing := sketch.MemoryRef{Namespace: "docs", Key: "missing"}
+	if err := c.Merge(context.Background(), ref, "original"); err != nil {
+		t.Fatalf("initial Merge: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.Merge(ctx, ref, "mutated"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Merge with canceled context err = %v, want context.Canceled", err)
+	}
+	if err := c.Merge(ctx, missing, "inserted"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Merge missing with canceled context err = %v, want context.Canceled", err)
+	}
+
+	v, ok, err := c.Get(context.Background(), ref)
+	if err != nil || !ok {
+		t.Fatalf("Get after canceled Merge: ok=%v err=%v", ok, err)
+	}
+	if v != "original" {
+		t.Fatalf("canceled Merge mutated stored value: got %q, want original", v)
+	}
+	if _, ok, err := c.Get(context.Background(), missing); err != nil || ok {
+		t.Fatalf("canceled Merge inserted missing ref: ok=%v err=%v", ok, err)
 	}
 }
 

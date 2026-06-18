@@ -197,6 +197,59 @@ func TestBuildPromptIncludesDistinctPayloadWithCompactedContext(t *testing.T) {
 	}
 }
 
+func TestBuildPromptWithCorpusIncludesReferencedContent(t *testing.T) {
+	corpus := runtime.NewCorpus(nil)
+	ref := sketch.MemoryRef{Namespace: "handoff", Key: "planner-1"}
+	if err := corpus.Merge(context.Background(), ref, "hidden corpus detail: BLUE_TOKEN"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	prompt, err := buildPromptWithCorpus(context.Background(), sketch.Msg{
+		From:    "planner",
+		Payload: "write final",
+		Ctx: sketch.HandoffContext{
+			Summary: "bounded summary",
+			Refs:    []sketch.MemoryRef{ref},
+		},
+	}, corpus, 1024)
+	if err != nil {
+		t.Fatalf("buildPromptWithCorpus: %v", err)
+	}
+	for _, want := range []string{
+		"Context handed from planner:\nbounded summary",
+		"Referenced corpus content handed from planner:",
+		"[handoff/planner-1]",
+		"hidden corpus detail: BLUE_TOKEN",
+		"Task:\nwrite final",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptWithCorpusBoundsReferencedContent(t *testing.T) {
+	corpus := runtime.NewCorpus(nil)
+	ref := sketch.MemoryRef{Namespace: "handoff", Key: "planner-1"}
+	if err := corpus.Merge(context.Background(), ref, "0123456789TAIL"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	prompt, err := buildPromptWithCorpus(context.Background(), sketch.Msg{
+		From: "planner",
+		Ctx:  sketch.HandoffContext{Refs: []sketch.MemoryRef{ref}},
+	}, corpus, 70)
+	if err != nil {
+		t.Fatalf("buildPromptWithCorpus: %v", err)
+	}
+	if len(prompt) > 71 {
+		t.Fatalf("prompt len = %d, want bounded near 70:\n%s", len(prompt), prompt)
+	}
+	if strings.Contains(prompt, "TAIL") {
+		t.Fatalf("prompt included content beyond ref budget:\n%s", prompt)
+	}
+}
+
 func TestBuildPromptIncludesDistinctPayloadWithTruncatedSummaryPrefix(t *testing.T) {
 	prompt := buildPrompt(sketch.Msg{
 		From:    "planner",

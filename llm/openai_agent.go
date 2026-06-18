@@ -29,12 +29,15 @@ type OpenAIAgent struct {
 	compact *runtime.Compactor // optional: bound + corpus-offload the handoff
 	fullOut bool               // keep full output in Payload even for routed compacted messages
 	seq     int                // per-step counter for unique corpus refs
+
+	promptCorpus   sketch.Corpus // optional: resolve inbound Ctx.Refs into prompt text
+	promptRefBytes int           // total resolved corpus bytes allowed in one prompt
 }
 
 // NewOpenAIAgent builds an OpenAI-backed actor. next is the address its result
 // is handed to ("" means the agent produces a terminal, un-routed message).
 func NewOpenAIAgent(addr sketch.Address, client openai.Client, model, system string, next sketch.Address, inbox sketch.Mailbox) *OpenAIAgent {
-	return &OpenAIAgent{addr: addr, inbox: inbox, client: client, model: model, system: system, next: next}
+	return &OpenAIAgent{addr: addr, inbox: inbox, client: client, model: model, system: system, next: next, promptRefBytes: defaultPromptRefBytes}
 }
 
 // WithCompactor makes the agent project its output onto a bounded, corpus-backed
@@ -42,6 +45,19 @@ func NewOpenAIAgent(addr sketch.Address, client openai.Client, model, system str
 // agent for chaining. Pass nil to keep the default full-output behavior.
 func (a *OpenAIAgent) WithCompactor(c *runtime.Compactor) *OpenAIAgent {
 	a.compact = c
+	if c == nil {
+		a.promptCorpus = nil
+	} else {
+		a.promptCorpus = c.Corpus()
+	}
+	return a
+}
+
+// WithPromptRefBytes sets the total byte budget for corpus ref content included
+// in this agent's model prompt. It applies when WithCompactor supplies a corpus;
+// pass 0 or less to disable inbound ref resolution.
+func (a *OpenAIAgent) WithPromptRefBytes(max int) *OpenAIAgent {
+	a.promptRefBytes = max
 	return a
 }
 
@@ -67,7 +83,10 @@ func (a *OpenAIAgent) Inbox() sketch.Mailbox { return a.inbox }
 func (a *OpenAIAgent) Step(ctx context.Context, in sketch.Msg) ([]sketch.Msg, error) {
 	// Task and any handed-over context go in the user input; the system prompt
 	// stays in Instructions so task/handoff text cannot override it.
-	prompt := buildPrompt(in)
+	prompt, err := buildPromptWithCorpus(ctx, in, a.promptCorpus, a.promptRefBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := a.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:        a.model,
