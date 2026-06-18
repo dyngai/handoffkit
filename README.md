@@ -1,6 +1,8 @@
 # HandoffKit
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/dyngai/handoffkit.svg)](https://pkg.go.dev/github.com/dyngai/handoffkit)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/dyngai/handoffkit)](./go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Codex Plugin](https://img.shields.io/badge/Codex-Plugin-111111?logo=openai&logoColor=white)](https://developers.openai.com/codex/plugins)
 [![Install in Codex](https://img.shields.io/badge/Install%20in-Codex-111111?logo=openai&logoColor=white)](#install-as-a-codex-plugin)
 
