@@ -16,6 +16,8 @@ tracing.
 
 > "Do not communicate by sharing memory; instead, share memory by communicating." (Rob Pike)
 
+Read the full blog post here: [HandoffKit: coordinate agents by passing messages, not sharing memory](https://platformpilot.ai/blog/open-sourcing-handoffkit?utm_source=github&utm_medium=referral&utm_campaign=handoffkit).
+
 - Interfaces: [`sketch/`](./sketch)
 - Runtime primitives: [`runtime/`](./runtime)
 - LLM-backed agents: [`llm/`](./llm)
