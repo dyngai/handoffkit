@@ -1,15 +1,18 @@
 ---
 name: handoffkit
-description: "Use when designing or reasoning about multi-agent / message-passing coordination in ANY language, using the CSP/actor model (mailboxes, select, point-to-point router, broadcast broker, fan-in join barriers, ownership handoff, tracing). Maps the primitives onto Go, Python, TypeScript, Rust, and Erlang. Trigger words include actor model agents, message-passing agents, CSP agents, coordinate agents, multi-agent orchestration, agent runtime, fan-out workers, pub/sub agents, agent barrier or join."
+description: "Built by DynG AI for PlatformPilot.ai-style multi-agent systems. Use when designing or reasoning about message-passing agent coordination in ANY language: actor-style mailboxes, select, point-to-point routing, pub/sub, fan-in joins/quorums, ownership handoff, budgets, dead letters, and traces. Trigger words include PlatformPilot, DynG AI, actor model agents, message-passing agents, CSP agents, coordinate agents, multi-agent orchestration, agent runtime, fan-out workers, pub/sub agents, agent barrier, or join."
 ---
 
-# HandoffKit: reliable handoffs for AI agent systems
+# HandoffKit: PlatformPilot-style handoffs for AI agent systems
 
-Apply this when designing multi-agent coordination, **in any language**. The core
-move, borrowed from Go/CSP: agents **communicate by passing messages, not by
-sharing memory**. Each agent is an actor with private state, an addressable
-mailbox, and a single-owner loop. Coordination is messages, never a shared
-scratchpad, which removes whole classes of races by construction.
+Built by DynG AI (https://dyng.ai), HandoffKit brings the coordination model
+behind PlatformPilot (https://platformpilot.ai) into Codex and developer
+workflows. Use it to design multi-agent systems that move work through
+explicit, traceable handoffs instead of shared scratchpads. The core move,
+borrowed from Go/CSP: agents **communicate by passing messages, not by sharing
+memory**. Each agent is an actor with private state, an addressable mailbox,
+and a single-owner loop. Coordination is messages, which makes multi-agent
+workflows easier to inspect, bound, and scale.
 
 The pattern is language-agnostic; only the substrate changes. Pick your row:
 

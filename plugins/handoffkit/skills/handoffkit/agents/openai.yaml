@@ -1,0 +1,7 @@
+interface:
+  display_name: "HandoffKit"
+  short_description: "CSP style agent handoffs"
+  icon_small: "./assets/symbol-square.png"
+  icon_large: "./assets/symbol-square.png"
+  brand_color: "#22B298"
+  default_prompt: "Use $handoffkit to design a PlatformPilot-style multi-agent system."

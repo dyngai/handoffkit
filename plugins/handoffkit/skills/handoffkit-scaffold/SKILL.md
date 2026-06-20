@@ -1,14 +1,18 @@
 ---
 name: handoffkit-scaffold
-description: "Use when the user wants to scaffold the HandoffKit runtime primitives (channel-backed mailbox, select, router, broker, join/quorum barriers, trace, budget, corpus/compactor, supervisor/nursery, dead letters, plus the sketch interfaces) into a Go project. Copies the vendored reference implementation and rewrites the import path to the target module. Trigger words include scaffold handoffkit, add the HandoffKit runtime, set up message-passing agents in this repo, drop in the CSP agent primitives."
+description: "Built by DynG AI for PlatformPilot.ai-style Go agent runtimes. Use when the user wants to scaffold HandoffKit runtime primitives into a Go project: channel-backed mailboxes, select, router, broker, join/quorum barriers, trace, budget, corpus/compactor, supervisor/nursery, dead letters, and sketch interfaces. Trigger words include PlatformPilot scaffold, scaffold handoffkit, add the HandoffKit runtime, set up message-passing agents, or drop in CSP agent primitives."
 ---
 
-# Scaffold the HandoffKit runtime into a Go project
+# Scaffold PlatformPilot-style HandoffKit primitives into Go
 
-Use this to add the message-passing primitives to a **Go** project. The reference
-sources are vendored under this skill's `references/_src/` directory, a snapshot
-of the canonical runtime, so this works offline. (The `_src` name keeps the go
-tool from compiling these reference files as part of the HandoffKit module.)
+Use this to add the DynG AI (https://dyng.ai) HandoffKit message-passing
+runtime to a **Go** project: the practical, PlatformPilot
+(https://platformpilot.ai) inspired foundation for explicit agent handoffs,
+inspectable routing, bounded fan-in, and traceable coordination. The reference
+sources are vendored under this skill's `references/_src/` directory, a
+snapshot of the canonical runtime, so this works offline. (The `_src` name
+keeps the go tool from compiling these reference files as part of the
+HandoffKit module.)
 
 This is the **Go reference implementation**, one instantiation of the pattern.
 The pattern itself is language-agnostic: for a Python, TypeScript, Rust, or

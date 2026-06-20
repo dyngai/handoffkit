@@ -1,33 +1,42 @@
 {
   "name": "handoffkit",
   "version": "0.1.3",
-  "description": "Design and scaffold reliable handoffs for coding agents. HandoffKit helps model agents as actors with mailboxes, select-style waits, routed ownership transfer, pub/sub broadcasts, fan-in joins/quorums, budgets, dead letters, bounded handoffs through corpus references, and message-level tracing. Includes language-agnostic architecture guidance plus a Go reference runtime scaffolder.",
+  "description": "HandoffKit by DynG AI brings the PlatformPilot.ai coordination model to Codex: explicit agent handoffs, actor-style mailboxes, routed ownership transfer, pub/sub awareness, fan-in joins, budgets, dead letters, and traceable multi-agent workflows.",
   "author": {
-    "name": "dyng.ai",
+    "name": "DynG AI",
     "url": "https://dyng.ai"
   },
+  "homepage": "https://platformpilot.ai/",
   "license": "MIT",
   "keywords": [
     "agents",
     "actor-model",
     "csp",
+    "dyng.ai",
+    "DynG AI",
     "go",
     "message-passing",
-    "multi-agent"
+    "multi-agent",
+    "PlatformPilot",
+    "PlatformPilot.ai"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "HandoffKit",
-    "shortDescription": "Build safer multi-agent systems with explicit handoffs",
-    "longDescription": "HandoffKit helps design multi-agent systems that coordinate by explicit messages instead of a shared coordination scratchpad. Use it to reason about agents as actors with private state, addressable mailboxes, select-style waits, point-to-point routing, broadcast brokers, fan-in joins/quorums, ownership transfer, cancellation, budgets, dead letters, and complete message-level traces. Made by https://dyng.ai",
-    "developerName": "Ricardo La Rosa",
+    "shortDescription": "PlatformPilot.ai-style agent handoffs for Codex",
+    "longDescription": "Built by DynG AI, HandoffKit brings the PlatformPilot.ai coordination model into Codex. Use it to design agent systems that move work through explicit, traceable handoffs instead of shared scratchpads: actor-style mailboxes, select-style waits, routed ownership transfer, broadcast awareness, fan-in joins and quorums, cancellation, budgets, dead letters, and message-level traces. It is the practical foundation for multi-agent workflows that are easier to inspect, easier to bound, and safer to scale.",
+    "developerName": "DynG AI",
     "category": "Productivity",
     "capabilities": [
       "Read",
       "Write"
     ],
+    "brandColor": "#22B298",
+    "composerIcon": "./assets/symbol-square.png",
+    "logo": "./assets/symbol-square.png",
+    "websiteURL": "https://platformpilot.ai/",
     "defaultPrompt": [
-      "Use handoffkit to design a message-passing multi-agent system.",
+      "Use handoffkit to design a PlatformPilot-style multi-agent system.",
       "Use handoffkit to scaffold the Go runtime primitives into this repo."
     ]
   }

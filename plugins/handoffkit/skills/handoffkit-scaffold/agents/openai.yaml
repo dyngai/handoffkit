@@ -1,0 +1,7 @@
+interface:
+  display_name: "HandoffKit Scaffold"
+  short_description: "Scaffold PlatformPilot-style Go agents"
+  icon_small: "./assets/symbol-square.png"
+  icon_large: "./assets/symbol-square.png"
+  brand_color: "#22B298"
+  default_prompt: "Use $handoffkit-scaffold to scaffold the Go runtime primitives."
